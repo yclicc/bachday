@@ -74,3 +74,8 @@ export function phraseForDate(rows: PhraseRow[], date: Date = new Date()): Phras
   const shuffled = deterministicShuffle(rows, "bachday-v1");
   return shuffled[dayIndex(date) % shuffled.length];
 }
+
+/** Pick a uniformly random phrase. */
+export function randomPhrase(rows: PhraseRow[]): PhraseRow {
+  return rows[Math.floor(Math.random() * rows.length)];
+}

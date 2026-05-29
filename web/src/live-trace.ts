@@ -56,6 +56,7 @@ export class LiveTraceRenderer {
   private viewEnd: number;
   private frozen = false;
   private showTargetWhileSinging: boolean;
+  private practiceMode = false;
   private tonicPc: number | null;
   private rafHandle = 0;
   private centreMidi: number;
@@ -105,6 +106,35 @@ export class LiveTraceRenderer {
   setShowTargetWhileSinging(b: boolean) {
     this.showTargetWhileSinging = b;
     this.draw();
+  }
+
+  setPracticeMode(b: boolean) {
+    this.practiceMode = b;
+    this.draw();
+  }
+
+  /** Drop accumulated points so practice doesn't grow unbounded between
+   *  sessions and the last-pitch indicator doesn't lag stale data. */
+  resetPoints() {
+    this.points = [];
+    this.draw();
+  }
+
+  /** True when the singer's current pitch is within tolerance of *any*
+   * target note in the phrase (octave-folded). Used by practice mode to
+   * give immediate green/red feedback without committing to a slot. */
+  private practiceColor(midi: number): string {
+    let bestErr = Infinity;
+    let bestTarget = 0;
+    for (const t of this.targetNotes) {
+      let s = midi;
+      while (s - t.midi > 6) s -= 12;
+      while (t.midi - s > 6) s += 12;
+      const e = Math.abs((s - t.midi) * 100);
+      if (e < bestErr) { bestErr = e; bestTarget = t.midi; }
+    }
+    if (!isFinite(bestErr)) return "#1f1a14";
+    return bestErr <= this.toleranceForTarget(bestTarget) ? "#15803d" : "#1f1a14";
   }
 
   addPoint(p: PitchPoint) {
@@ -170,8 +200,27 @@ export class LiveTraceRenderer {
     }
     ctx.stroke();
 
-    const showTarget = this.frozen || this.showTargetWhileSinging;
+    const showTarget = this.frozen || this.showTargetWhileSinging || this.practiceMode;
     if (showTarget) this.drawTargetBars();
+
+    if (this.practiceMode) {
+      // Tuner-style display: a full-width horizontal line at the singer's
+      // current pitch so it's easy to slide it onto a target bar.
+      const last = [...this.points].reverse().find((p) => p.midi != null);
+      if (last) {
+        const y = this.midiToY(last.midi!);
+        ctx.strokeStyle = this.practiceColor(last.midi!);
+        ctx.lineWidth = 3;
+        ctx.setLineDash([8, 6]);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      return;
+    }
+
     this.drawUserTrace();
 
     if (!this.frozen) {
@@ -207,29 +256,67 @@ export class LiveTraceRenderer {
 
   private drawUserTrace() {
     const ctx = this.ctx;
-    ctx.strokeStyle = "#1f1a14";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    let pen = false;
+    ctx.lineWidth = 2.4;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    // Only colour the line green/red once the recording is frozen — while
+    // live we don't yet know the singer's true rhythm, so per-slot hit
+    // judgements would be misleading.
+    const colourise = this.frozen;
+    let prev: { x: number; y: number } | null = null;
     for (const p of this.points) {
-      if (p.midi == null) { pen = false; continue; }
+      if (p.midi == null) { prev = null; continue; }
       const x = this.timeToX(p.time);
       const y = this.midiToY(p.midi);
-      if (!pen) { ctx.moveTo(x, y); pen = true; }
-      else ctx.lineTo(x, y);
+      const color = colourise ? (this.hitColor(p) ?? "#9ca3af") : "#1f1a14";
+      if (prev) {
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(prev.x, prev.y);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+      }
+      prev = { x, y };
     }
-    ctx.stroke();
   }
 
   /** Per-note tolerance, in cents. A flat ±50¢ baseline (half a quarter-tone
    * either way) plus the worst-case deviation between equal-tempered and
    * pure / Pythagorean tuning for the note's scale-degree relative to the
    * tonic. So a major 3rd or 6th gets ±70¢, a perfect 5th stays at ±56¢. */
-  private toleranceForTarget(target: number): number {
+  toleranceForTarget(target: number): number {
     const base = 50;
     if (this.tonicPc == null) return base + 15; // no tonic known → generous default
     const interval = ((target - this.tonicPc) % 12 + 12) % 12;
     return base + JI_DEVIATION_CENTS[interval];
+  }
+
+  /** Index of the target slot containing time `t`, or -1 if outside the
+   * current view. Uses the (mutable) viewStart/viewEnd so coloring stays
+   * consistent as the live trace scrolls. */
+  targetSlotAt(t: number): number {
+    const span = this.viewEnd - this.viewStart;
+    if (span <= 0) return -1;
+    const u = (t - this.viewStart) / span;
+    if (u < 0 || u > 1) return -1;
+    for (let i = 0; i < this.targetNotes.length; i++) {
+      if (u >= this.slotEdges[i] && u < this.slotEdges[i + 1]) return i;
+    }
+    return this.targetNotes.length - 1;
+  }
+
+  /** Tri-state colour for a sung point relative to its target slot.
+   * Returns a hex string or null if no target / unvoiced. */
+  hitColor(p: PitchPoint): string | null {
+    if (p.midi == null) return null;
+    const i = this.targetSlotAt(p.time);
+    if (i < 0) return null;
+    const target = this.targetNotes[i].midi;
+    let s = p.midi;
+    while (s - target > 6) s -= 12;
+    while (target - s > 6) s += 12;
+    const cents = Math.abs((s - target) * 100);
+    return cents <= this.toleranceForTarget(target) ? "#15803d" : "#b91c1c";
   }
 
   /** Per-target-note score using the voiced span as the time base. */

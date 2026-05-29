@@ -13,7 +13,7 @@ const SYLLABLES: Record<number, { diatonic: boolean; sharp: string; flat: string
   4: { diatonic: true, sharp: "mi", flat: "mi" },
   5: { diatonic: true, sharp: "fa", flat: "fa" },
   6: { diatonic: false, sharp: "fi", flat: "se" },
-  7: { diatonic: true, sharp: "sol", flat: "sol" },
+  7: { diatonic: true, sharp: "so", flat: "so" },
   8: { diatonic: false, sharp: "si", flat: "le" },
   9: { diatonic: true, sharp: "la", flat: "la" },
   10: { diatonic: false, sharp: "li", flat: "te" },

@@ -1,5 +1,8 @@
-/** Share-image renderer: the trace-and-target overlay composited on top of
- * the Bach portrait, with a title and score readout. */
+/** Share-image renderer. Bach portrait fills the whole frame (low-res but
+ * shareable). A translucent panel at the bottom hosts the trace and score;
+ * the chorale title sits in a header strip at the top. The user's pitch
+ * line is coloured per segment: green where on the target note, red where
+ * not — matching the live trace. */
 
 import type { LiveTraceRenderer } from "./live-trace";
 
@@ -10,52 +13,102 @@ export interface AccuracyReport {
   frames: Array<{ time: number; target: number; sung: number | null; centsError: number | null }>;
 }
 
+export interface ShareCaption {
+  title: string;
+  subtitle: string;
+  date: string;
+}
+
 export async function renderShareCanvas(
   canvas: HTMLCanvasElement,
   portraitSrc: string,
   trace: LiveTraceRenderer,
   score: { score: number; meanCentsError: number },
-  caption: string,
+  caption: ShareCaption,
 ): Promise<void> {
   const img = await loadImage(portraitSrc).catch(() => null);
-  const W = 1080, H = 1080;
+
+  // 800x800: low-res, social-friendly square. Bach fills the canvas
+  // (cover scale, like the original layout) so he reads instantly in a feed.
+  const W = 800, H = 800;
   canvas.width = W;
   canvas.height = H;
   const ctx = canvas.getContext("2d")!;
+
+  // Portrait, cover-scaled
   ctx.fillStyle = "#1f1a14";
   ctx.fillRect(0, 0, W, H);
   if (img) {
     const scale = Math.max(W / img.width, H / img.height);
     const dw = img.width * scale;
     const dh = img.height * scale;
-    ctx.globalAlpha = 0.45;
     ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
-    ctx.globalAlpha = 1;
   }
 
-  // panel that the trace sits in
-  const panelX = 60, panelY = H - 540, panelW = W - 120, panelH = 360;
-  ctx.fillStyle = "rgba(250, 247, 240, 0.92)";
-  ctx.fillRect(panelX, panelY, panelW, panelH);
-  ctx.strokeStyle = "#6b3f1d";
-  ctx.lineWidth = 3;
-  ctx.strokeRect(panelX, panelY, panelW, panelH);
+  // Top gradient strip for the title's legibility against the painting
+  const topGrad = ctx.createLinearGradient(0, 0, 0, 200);
+  topGrad.addColorStop(0, "rgba(0, 0, 0, 0.6)");
+  topGrad.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = topGrad;
+  ctx.fillRect(0, 0, W, 200);
 
-  drawTraceInto(ctx, trace, panelX + 16, panelY + 16, panelW - 32, panelH - 32);
-
-  // header
-  ctx.fillStyle = "#faf7f0";
-  ctx.font = "bold 64px Georgia, serif";
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "600 30px 'Cormorant Garamond', Georgia, serif";
   ctx.textAlign = "left";
-  ctx.fillText("BachDay", 60, 120);
-  ctx.font = "32px Georgia, serif";
-  ctx.fillText(caption, 60, 170);
-  ctx.font = "bold 96px Georgia, serif";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText("BachDay", 28, 46);
+  ctx.font = "italic 28px 'Cormorant Garamond', Georgia, serif";
+  ctx.fillText(truncateToWidth(ctx, caption.title, W - 240), 28, 84);
+
+  ctx.font = "600 56px -apple-system, 'Inter', sans-serif";
   ctx.textAlign = "right";
-  ctx.fillText(`${Math.round(score.score * 100)}%`, W - 60, 130);
-  ctx.font = "italic 28px Georgia, serif";
+  ctx.fillText(`${Math.round(score.score * 100)}%`, W - 28, 60);
+  ctx.font = "400 16px -apple-system, 'Inter', sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.fillText(`mean error ${score.meanCentsError.toFixed(0)}¢`, W - 28, 86);
+
+  // Trace panel at the bottom — translucent so Bach still shows through.
+  const panelH = 240;
+  const panelY = H - panelH - 20;
+  const panelX = 20;
+  const panelW = W - 40;
+  ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+  roundRect(ctx, panelX, panelY, panelW, panelH, 14);
+  ctx.fill();
+
+  drawTraceInto(ctx, trace, panelX + 16, panelY + 16, panelW - 32, panelH - 48);
+
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "400 14px -apple-system, 'Inter', sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText(caption.subtitle, panelX + 16, panelY + panelH - 14);
   ctx.textAlign = "right";
-  ctx.fillText(`mean error ${score.meanCentsError.toFixed(0)}¢`, W - 60, 170);
+  ctx.fillText(caption.date, panelX + panelW - 16, panelY + panelH - 14);
+}
+
+function truncateToWidth(ctx: CanvasRenderingContext2D, text: string, maxW: number): string {
+  if (ctx.measureText(text).width <= maxW) return text;
+  let lo = 0, hi = text.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (ctx.measureText(text.slice(0, mid) + "…").width <= maxW) lo = mid;
+    else hi = mid - 1;
+  }
+  return text.slice(0, lo) + "…";
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
 }
 
 function drawTraceInto(
@@ -70,12 +123,11 @@ function drawTraceInto(
   const midiToY = (m: number) => y + ((top - m) / pitchSpan) * h;
   const timeToX = (t: number) => x + ((t - view.start) / span) * w;
 
-  // gridlines
   ctx.save();
   ctx.beginPath();
   ctx.rect(x, y, w, h);
   ctx.clip();
-  ctx.strokeStyle = "rgba(31, 26, 20, 0.08)";
+  ctx.strokeStyle = "rgba(15, 23, 42, 0.06)";
   ctx.lineWidth = 1;
   ctx.beginPath();
   for (let m = Math.floor(view.centre - view.range); m <= Math.ceil(view.centre + view.range); m++) {
@@ -85,39 +137,44 @@ function drawTraceInto(
   }
   ctx.stroke();
 
-  // target bars (laid out by note duration)
+  // Target bars
   const target = trace.getTargetNotes();
   const edges = trace.getSlotEdges();
   const N = target.length;
   if (N > 0) {
-    ctx.fillStyle = "rgba(107, 63, 29, 0.22)";
-    ctx.strokeStyle = "#6b3f1d";
-    ctx.lineWidth = 4;
+    ctx.fillStyle = "rgba(31, 26, 20, 0.14)";
+    ctx.strokeStyle = "#15171a";
+    ctx.lineWidth = 2.5;
     for (let i = 0; i < N; i++) {
       const x0 = timeToX(view.start + edges[i] * span);
       const x1 = timeToX(view.start + edges[i + 1] * span);
       const yy = midiToY(target[i].midi);
-      ctx.fillRect(x0 + 3, yy - 8, x1 - x0 - 6, 16);
+      ctx.fillRect(x0 + 2, yy - 6, x1 - x0 - 4, 12);
       ctx.beginPath();
-      ctx.moveTo(x0 + 3, yy);
-      ctx.lineTo(x1 - 3, yy);
+      ctx.moveTo(x0 + 2, yy);
+      ctx.lineTo(x1 - 2, yy);
       ctx.stroke();
     }
   }
 
-  // user pitch trace
-  ctx.strokeStyle = "#1f1a14";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  let pen = false;
+  // User pitch trace, coloured per-segment by hit/miss
+  ctx.lineWidth = 2.6;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  let prev: { x: number; y: number } | null = null;
   for (const p of trace.getPoints()) {
-    if (p.midi == null) { pen = false; continue; }
+    if (p.midi == null) { prev = null; continue; }
     const px = timeToX(p.time);
     const py = midiToY(p.midi);
-    if (!pen) { ctx.moveTo(px, py); pen = true; }
-    else ctx.lineTo(px, py);
+    if (prev) {
+      ctx.strokeStyle = trace.hitColor(p) ?? "#9ca3af";
+      ctx.beginPath();
+      ctx.moveTo(prev.x, prev.y);
+      ctx.lineTo(px, py);
+      ctx.stroke();
+    }
+    prev = { x: px, y: py };
   }
-  ctx.stroke();
   ctx.restore();
 }
 

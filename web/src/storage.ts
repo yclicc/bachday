@@ -10,7 +10,7 @@ export interface Prefs {
   voice: VoiceType | null;
   solfege: SolfegeMode;
   showTargetWhileSinging?: boolean;
-  showLyrics?: boolean;
+  onboarded?: boolean;
 }
 
 export interface HistoryEntry {
@@ -27,7 +27,7 @@ export function loadPrefs(): Prefs {
     const raw = localStorage.getItem(PREFS_KEY);
     if (raw) return JSON.parse(raw);
   } catch {}
-  return { voice: null, solfege: "all", showTargetWhileSinging: false, showLyrics: true };
+  return { voice: null, solfege: "all", showTargetWhileSinging: false };
 }
 
 export function savePrefs(p: Prefs): void {

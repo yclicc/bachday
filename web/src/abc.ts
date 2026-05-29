@@ -223,7 +223,7 @@ const KEY_FIFTHS: Record<string, number> = {
   F: -1, Bb: -2, Eb: -3, Ab: -4, Db: -5, Gb: -6, Cb: -7,
 };
 
-function keyAccidentalsForKeyString(keyStr: string): Map<string, number> {
+export function keyAccidentalsForKeyString(keyStr: string): Map<string, number> {
   const m = keyStr.trim().match(/^([A-G][#b]?)(m|maj|min)?/);
   const map = new Map<string, number>();
   if (!m) return map;
@@ -265,6 +265,46 @@ function abcNoteLetterToMidi(
   else if (acc === "=") adj = 0;
   else adj = keyAcc.get(upper) ?? 0;
   return 12 * (oct + 1) + base[upper] + adj;
+}
+
+/** Render a MIDI value as an ABC note token, choosing the diatonic spelling
+ *  for the given key signature when possible (no explicit accidental) and
+ *  falling back to a sharp/flat otherwise. Octave is encoded with case +
+ *  `,` / `'` so e.g. C4 → `C`, C5 → `c`, C3 → `C,`, F#5 in C major → `^f`. */
+export function midiToAbcToken(midi: number, keyStr: string): string {
+  const keyAcc = keyAccidentalsForKeyString(keyStr);
+  const pc = ((midi % 12) + 12) % 12;
+  const letters: Array<[string, number]> = [
+    ["C", 0], ["D", 2], ["E", 4], ["F", 5], ["G", 7], ["A", 9], ["B", 11],
+  ];
+  // Prefer the diatonic letter (no accidental needed). Fall back to the
+  // nearest natural spelling with an explicit accidental.
+  let letter = "C";
+  let basePc = 0;
+  let explicit: "" | "^" | "_" = "";
+  let found = false;
+  for (const [L, b] of letters) {
+    const adj = keyAcc.get(L) ?? 0;
+    if ((((b + adj) % 12) + 12) % 12 === pc) {
+      letter = L; basePc = b + adj; found = true; break;
+    }
+  }
+  if (!found) {
+    for (const [L, b] of letters) {
+      if (((b + 1) % 12) === pc) { letter = L; basePc = b; explicit = "^"; found = true; break; }
+      if ((((b - 1) % 12) + 12) % 12 === pc) { letter = L; basePc = b; explicit = "_"; found = true; break; }
+    }
+  }
+  const oct = (midi - basePc) / 12 - 1;
+  let token: string;
+  if (oct >= 5) {
+    token = letter.toLowerCase();
+    for (let i = 0; i < oct - 5; i++) token += "'";
+  } else {
+    token = letter;
+    for (let i = 0; i < 4 - oct; i++) token += ",";
+  }
+  return explicit + token;
 }
 
 function isHeaderLine(line: string): boolean {

@@ -7,7 +7,7 @@
 import { tonicPc } from "./solfege";
 import { extractKey } from "./abc";
 
-function pickTonicMidi(tonicPC: number, voiceMid: number): number {
+export function pickTonicMidi(tonicPC: number, voiceMid: number): number {
   // pick the octave whose tonic is closest to the middle of the voice's range
   let best = tonicPC;
   let bestDist = Infinity;
