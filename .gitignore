@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+.python-version
+
+# uv
+.uv/
+
+# Generated dataset (regenerate with process_dataset.py)
+dataset/
+web/public/phrases.json
+
+# Local Bach portrait asset (user-provided)
+web/public/bach.jpg
+
+# Node / Vite
+web/node_modules/
+web/dist/
+web/.vite/
+*.log
+npm-debug.log*
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Jupyter
+.ipynb_checkpoints/
