@@ -15,6 +15,18 @@ export const VOICE_TYPES: VoiceType[] = [
   "Bass",
 ];
 
+/** Display label per voice type — separate from the stored value so existing
+ *  saved prefs (literal string "Soprano") still load. Soprano gets the
+ *  "/ Treble" suffix so boy-trebles see themselves represented. */
+export const VOICE_LABEL: Record<VoiceType, string> = {
+  Soprano: "Soprano / Treble",
+  "Mezzo-Soprano": "Mezzo-Soprano",
+  Alto: "Alto",
+  Tenor: "Tenor",
+  Baritone: "Baritone",
+  Bass: "Bass",
+};
+
 /** Practical singing range per voice type. Wide enough that an original
  * Bach part written for that voice will normally fit without any transposition. */
 export const VOICE_RANGE: Record<VoiceType, { lo: number; hi: number }> = {

@@ -479,3 +479,28 @@ button.tiny { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
 .fade-in.warmup-page > .warmup-card:nth-of-type(2) { animation: fadeIn 800ms cubic-bezier(0.16, 1, 0.3, 1) 420ms both; }
 .fade-in.warmup-page > #warmup-trace-canvas        { animation: fadeIn 800ms cubic-bezier(0.16, 1, 0.3, 1) 560ms both; }
 .fade-in.warmup-page > .controls-bar               { animation: fadeIn 700ms cubic-bezier(0.16, 1, 0.3, 1) 700ms both; }
+
+/* Info / consent modal — paragraphs, headings, and citation blocks. The
+ * "modal-actions" footer is left-justified for the secondary "About" button
+ * so the primary "Done" stays on the right per usual modal convention. */
+.info-h {
+  margin: 1.1rem 0 0.4rem;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.info-block { margin: 0.45rem 0; font-size: 0.92rem; line-height: 1.5; }
+.info-block a { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+.citation {
+  margin: 0.35rem 0 0.75rem;
+  padding: 0.55rem 0.75rem;
+  background: var(--accent-soft);
+  border-left: 3px solid var(--line);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--fg);
+}
+.modal-actions { justify-content: space-between; }
+.modal-actions button.secondary { margin-right: auto; }

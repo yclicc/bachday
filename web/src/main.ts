@@ -1,6 +1,6 @@
 import abcjs from "abcjs";
 import {
-  VOICE_TYPES, chooseTransposition, chooseClef, CLEF_STAFF_OFFSET,
+  VOICE_TYPES, VOICE_LABEL, chooseTransposition, chooseClef, CLEF_STAFF_OFFSET,
   type VoiceType,
 } from "./voice";
 import {
@@ -61,7 +61,9 @@ async function main() {
     if (!tryLoadFromHash() && currentMode === "permalink") loadDaily();
   });
   if (!prefs.onboarded || !prefs.voice) {
-    openOnboarding();
+    // First-boot flow: show the info / consent page before onboarding so the
+    // user knows what we store before they hand over a voice preference.
+    openInfo({ initial: true });
   } else if (!tryLoadFromHash()) {
     loadDaily();
   }
@@ -210,6 +212,72 @@ function buildSwitch(checked: boolean, onChange: (v: boolean) => void): HTMLDivE
  *  Onboarding modal — asked on first visit only.
  * ------------------------------------------------------------- */
 
+/* ------------------------------------------------------------- *
+ *  Info / consent modal — shown on first visit before any preferences are
+ *  saved, and reachable later from a button in the settings page.
+ * ------------------------------------------------------------- */
+
+function openInfo({ initial }: { initial: boolean }) {
+  const content = document.createElement("div");
+  content.innerHTML = `
+    <h2>About BachDay</h2>
+    <p class="info-block">
+      A new Bach chorale phrase every day — transposed for your voice, lyrics
+      with movable-do solfege, and live pitch feedback when you sing along.
+    </p>
+    <h3 class="info-h">A note on storage</h3>
+    <p class="info-block">
+      BachDay stores your voice type, preferences and recent attempt history
+      in your browser's local storage (similar to a cookie). Nothing leaves
+      your device. By using the site you consent to this local storage.
+    </p>
+    <h3 class="info-h">Acknowledgements</h3>
+    <p class="info-block">
+      Pitch detection runs the
+      <a href="https://github.com/marl/crepe" target="_blank" rel="noopener">CREPE</a>
+      model in your browser. Thank you to its authors:
+    </p>
+    <p class="citation">
+      Jong Wook Kim, Justin Salamon, Peter Li, Juan Pablo Bello.
+      <em>CREPE: A Convolutional Representation for Pitch Estimation.</em>
+      Proceedings of the IEEE International Conference on Acoustics, Speech,
+      and Signal Processing (ICASSP), 2018.
+    </p>
+    <p class="info-block">
+      The phrase dataset was extracted from the Bach chorales using
+      <a href="https://www.music21.org/" target="_blank" rel="noopener">music21</a>.
+      Thank you to its authors:
+    </p>
+    <p class="citation">
+      Michael Scott Cuthbert and Christopher Ariza.
+      <em>music21: A Toolkit for Computer-Aided Musicology and Symbolic Music
+      Data.</em> Proceedings of the 11th International Society for Music
+      Information Retrieval Conference (ISMIR 2010), Utrecht, Netherlands,
+      pp. 637–642.
+    </p>
+    <p class="info-block">
+      The Bach chorale source files in the music21 corpus derive from the
+      MusicXML transcriptions made by the late Margaret Greentree.
+      We are grateful for her work.
+    </p>
+  `;
+
+  const actions = document.createElement("div");
+  actions.className = "modal-actions";
+  const btn = document.createElement("button");
+  btn.textContent = initial ? "I understand — continue" : "Close";
+  btn.onclick = () => {
+    closeModal();
+    if (initial) openOnboarding();
+  };
+  actions.appendChild(btn);
+  content.appendChild(actions);
+
+  // Initial flow must not be dismissed by a backdrop click — the user has to
+  // make an active choice. From settings the modal is freely dismissible.
+  openModal(content, { dismissible: !initial });
+}
+
 function openOnboarding() {
   const content = document.createElement("div");
   content.innerHTML = `
@@ -225,7 +293,7 @@ function openOnboarding() {
   voiceField.className = "field";
   voiceField.innerHTML = `<label class="field-label">Your voice type</label>`;
   voiceField.appendChild(buildChoiceGrid(
-    VOICE_TYPES.map((v) => ({ value: v, label: v })),
+    VOICE_TYPES.map((v) => ({ value: v, label: VOICE_LABEL[v] })),
     pickedVoice,
     (v) => { pickedVoice = v; (content.querySelector("#go-btn") as HTMLButtonElement).disabled = false; },
   ));
@@ -286,7 +354,7 @@ function openSettings() {
   voiceField.className = "field";
   voiceField.innerHTML = `<label class="field-label">Voice type</label>`;
   voiceField.appendChild(buildChoiceGrid(
-    VOICE_TYPES.map((v) => ({ value: v, label: v })),
+    VOICE_TYPES.map((v) => ({ value: v, label: VOICE_LABEL[v] })),
     prefs.voice,
     (v) => { prefs.voice = v; savePrefs(prefs); renderCurrentScreen(); },
   ));
@@ -334,10 +402,14 @@ function openSettings() {
 
   const actions = document.createElement("div");
   actions.className = "modal-actions";
+  const infoBtn = document.createElement("button");
+  infoBtn.className = "secondary";
+  infoBtn.textContent = "About & credits";
+  infoBtn.onclick = () => openInfo({ initial: false });
   const doneBtn = document.createElement("button");
   doneBtn.textContent = "Done";
   doneBtn.onclick = closeModal;
-  actions.appendChild(doneBtn);
+  actions.append(infoBtn, doneBtn);
 
   content.append(voiceField, solfegeField, toggles, actions);
   openModal(content);
@@ -594,7 +666,7 @@ function renderPhraseView() {
       </div>
       <div class="meta">
         BWV ${currentPhrase.chorale} · ${partLabel(currentPhrase.part)} · phrase ${currentPhrase.phrase}
-        · ${currentTranspose >= 0 ? "+" : ""}${currentTranspose} semitones for ${prefs.voice} · ${clef} clef
+        · ${currentTranspose >= 0 ? "+" : ""}${currentTranspose} semitones for ${VOICE_LABEL[prefs.voice]} · ${clef} clef
         <button id="copy-link-btn" class="link-btn" title="Copy a permalink to this phrase">🔗 link</button>
       </div>
       <div class="key-ref-wrap">
