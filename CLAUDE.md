@@ -26,6 +26,15 @@ Then make a website called BachDay which shuffles (in a deterministic fashion) a
 - **`src/solfege.ts`** — `tonicPc(keyStr)`, moveable-do labels (`do/re/mi/fa/sol/la/ti` + chromatic `di/ri/fi/si/li/ra/me/se/le/te`), `isChromatic` predicate.
 - **`src/storage.ts`** — typed localStorage wrapper. `Prefs = { voice, solfege, showTargetWhileSinging?, showLyrics? }`. `HistoryEntry` keyed by date.
 
+### Open TODOs (next session)
+- **Rest handling** — rescale recorded audio in time so silence added to the start/end doesn't penalise the grade. Pick the alignment that maximises score against the target.
+- **Permalinks** to individual passages. When both "today's passage" and "shuffle" buttons are visible, keep shuffle on the right (don't reorder). Allow custom transpositions via the permalink, which should temporarily override the saved voice preference.
+- **Carried accidentals across phrase boundaries** — when an accidental from a previous phrase still applies in the original chorale, the extracted phrase's ABC needs the accidental re-stated (otherwise the note is wrong without the prior bar's context).
+- **Practice mode without easy mode** — let users use practice mode any time; temporarily reveal target pitches during practice even if easy mode is off.
+- **Retries** — currently buggy after a single recording. Allow multiple attempts cleanly. The shareable image should either note the attempt number or only be available for the first attempt.
+- **Warm-up scale** in the upcoming key, displayed like easy-mode (with steps shown). Toggle in settings.
+- **Reference G pitch on load** — show G4 for women / G3 for men, with key signature + natural sign if needed and a solfege label indicating that pitch's scale degree in the upcoming key. Goal: ear-training / perfect-pitch development. Display via the practice-mode horizontal bar. Toggle in settings.
+
 ### Notable past decisions / things to preserve
 - Use abcjs's own `visualTranspose` for display and `midiTranspose` for synth — never hand-roll ABC transposition. abc_midi_sequencer applies `-= visualTranspose`, so both options must be set.
 - No C clefs — user dislikes them. Tenor uses `treble-8`.

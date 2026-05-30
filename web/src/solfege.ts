@@ -35,23 +35,38 @@ export function tonicPc(keyStr: string): { pc: number; minor: boolean } {
 }
 
 export function solfege(midi: number, tonicPc_: number, minor: boolean): string {
-  const pc = ((midi - tonicPc_) % 12 + 12) % 12;
-  // In minor keys, shift so "do" sits on the minor tonic (la-based minor would
-  // be the alternative; we use do-based minor here for simplicity).
-  // For do-based minor, b3 b6 b7 are diatonic, so override:
+  // La-based minor: in a minor key the tonic sounds "la" and the relative
+  // major's tonic (a minor 3rd up) sounds "do". This lets the same syllables
+  // describe a key and its relative without re-anchoring.
   if (minor) {
-    const minorMap: Record<number, string> = {
-      0: "do", 1: "ra", 2: "re", 3: "me", 4: "mi", 5: "fa",
-      6: "se", 7: "sol", 8: "le", 9: "la", 10: "te", 11: "ti",
+    const pc = ((midi - tonicPc_) % 12 + 12) % 12;
+    // Offsets are relative to the minor tonic (la). Diatonic degrees of the
+    // natural minor: la, ti, do, re, mi, fa, sol; chromatic alterations use
+    // the standard sharp / flat syllables of the relative major.
+    const labels: Record<number, string> = {
+      0: "la",            // ^1
+      1: "li",            // ♯1  (raised tonic)
+      2: "ti",            // ^2
+      3: "do",            // ^3 → relative-major tonic
+      4: "di",            // ♯3
+      5: "re",            // ^4
+      6: "ri",            // ♯4 (= ♭5 → "ri" picked for ascending feel)
+      7: "mi",            // ^5
+      8: "fa",            // ^6
+      9: "fi",            // ♯6 (raised 6 in melodic minor)
+      10: "sol",          // ^7
+      11: "si",           // ♯7 (raised leading tone)
     };
-    return minorMap[pc];
+    return labels[pc];
   }
+  const pc = ((midi - tonicPc_) % 12 + 12) % 12;
   const s = SYLLABLES[pc];
   return s.diatonic ? s.sharp : s.sharp; // prefer sharp-side for ascending feel
 }
 
 export function isChromatic(midi: number, tonicPc_: number, minor: boolean): boolean {
   const pc = ((midi - tonicPc_) % 12 + 12) % 12;
-  if (minor) return [1, 6, 8, 11].includes(pc); // raised/lowered relative to natural minor
+  // Natural-minor diatonic pcs (relative to the minor tonic): 0 2 3 5 7 8 10.
+  if (minor) return ![0, 2, 3, 5, 7, 8, 10].includes(pc);
   return !SYLLABLES[pc].diatonic;
 }

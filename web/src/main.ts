@@ -3,13 +3,16 @@ import {
   VOICE_TYPES, chooseTransposition, chooseClef, CLEF_STAFF_OFFSET,
   type VoiceType,
 } from "./voice";
-import { phraseForDate, randomPhrase, todayKey, type Dataset, type PhraseRow } from "./schedule";
+import {
+  phraseForDate, randomPhrase, todayKey, parsePermalink, findPhrase, permalinkFor,
+  type Dataset, type PhraseRow,
+} from "./schedule";
 import {
   addSolfegeLyrics, setAbcClef, extractKey, midiToAbcToken,
   abcSourceNoteSequence,
   type VisualObj,
 } from "./abc";
-import { tonicPc } from "./solfege";
+import { tonicPc, solfege as solfegeFor } from "./solfege";
 import { LivePitchDetector, preloadCrepe } from "./pitch";
 import { LiveTraceRenderer } from "./live-trace";
 import { playDoSolDo, pickTonicMidi } from "./cue";
@@ -21,11 +24,26 @@ const PORTRAIT_URL = "/bach.jpg";
 let prefs: Prefs = loadPrefs();
 let dataset: Dataset = { chorales: {}, lyrics: {}, phrases: [] };
 let currentPhrase: PhraseRow | null = null;
-let currentMode: "daily" | "shuffle" = "daily";
+let currentMode: "daily" | "shuffle" | "permalink" = "daily";
 let currentTranspose = 0;
+/** When non-null, overrides the voice-derived transposition (set via the
+ *  `&t=` permalink parameter). Cleared whenever we move to a new phrase via
+ *  the daily/shuffle buttons. */
+let customTranspose: number | null = null;
 let currentVisual: VisualObj | null = null;
 let trace: LiveTraceRenderer | null = null;
 let lastReport: AccuracyReport | null = null;
+/** 1-indexed attempt counter for the current phrase, bumped on each recording.
+ *  Resets to 0 every time we navigate to a new phrase. */
+let attemptNum = 0;
+/** Which screen is currently mounted in #app. Each new phrase decides whether
+ *  to show the warm-up page first (if either warm-up toggle is on) before
+ *  routing to the score view. Settings changes re-render the current screen
+ *  in place rather than replaying the warm-up. */
+let currentScreen: "warmup" | "phrase" = "phrase";
+/** Detector for the warm-up page's built-in practice mode; tracked here so we
+ *  can cleanly stop it when navigating away. */
+let warmupDetector: LivePitchDetector | null = null;
 
 async function main() {
   try {
@@ -39,24 +57,75 @@ async function main() {
     return;
   }
   wireSettingsButton();
+  window.addEventListener("hashchange", () => {
+    if (!tryLoadFromHash() && currentMode === "permalink") loadDaily();
+  });
   if (!prefs.onboarded || !prefs.voice) {
     openOnboarding();
-  } else {
+  } else if (!tryLoadFromHash()) {
     loadDaily();
   }
   preloadCrepe();
 }
 
+/** Try to navigate to the phrase encoded in the URL hash. Returns true if a
+ *  valid permalink was found and loaded. */
+function tryLoadFromHash(): boolean {
+  const pl = parsePermalink();
+  if (!pl) return false;
+  const row = findPhrase(dataset.phrases, pl);
+  if (!row) return false;
+  currentMode = "permalink";
+  currentPhrase = row;
+  customTranspose = pl.transpose ?? null;
+  attemptNum = 0;
+  enterPhrase();
+  return true;
+}
+
+/** Decide between the warm-up page and the score view for a freshly-loaded
+ *  phrase. Settings that change the warm-up toggles take effect from the next
+ *  phrase load — they don't yank the user back to the warm-up of the current
+ *  one. */
+function enterPhrase() {
+  stopWarmupDetector();
+  if (prefs.showReferencePitch || prefs.showWarmupScale) {
+    currentScreen = "warmup";
+    renderWarmupPage();
+  } else {
+    currentScreen = "phrase";
+    renderPhraseView();
+  }
+}
+
+function renderCurrentScreen() {
+  if (currentScreen === "warmup") renderWarmupPage();
+  else renderPhraseView();
+}
+
+function stopWarmupDetector() {
+  if (warmupDetector) {
+    void warmupDetector.stop();
+    warmupDetector = null;
+  }
+}
+
 function loadDaily() {
   currentMode = "daily";
+  customTranspose = null;
+  attemptNum = 0;
   currentPhrase = phraseForDate(dataset.phrases);
-  renderPhraseView();
+  if (window.location.hash) history.replaceState(null, "", window.location.pathname);
+  enterPhrase();
 }
 
 function loadShuffle() {
   currentMode = "shuffle";
+  customTranspose = null;
+  attemptNum = 0;
   currentPhrase = randomPhrase(dataset.phrases);
-  renderPhraseView();
+  if (window.location.hash) history.replaceState(null, "", window.location.pathname);
+  enterPhrase();
 }
 
 function wireSettingsButton() {
@@ -219,7 +288,7 @@ function openSettings() {
   voiceField.appendChild(buildChoiceGrid(
     VOICE_TYPES.map((v) => ({ value: v, label: v })),
     prefs.voice,
-    (v) => { prefs.voice = v; savePrefs(prefs); renderPhraseView(); },
+    (v) => { prefs.voice = v; savePrefs(prefs); renderCurrentScreen(); },
   ));
 
   const solfegeField = document.createElement("div");
@@ -232,7 +301,7 @@ function openSettings() {
       { value: "all", label: "All notes" },
     ],
     prefs.solfege,
-    (v) => { prefs.solfege = v; savePrefs(prefs); renderPhraseView(); },
+    (v) => { prefs.solfege = v; savePrefs(prefs); renderCurrentScreen(); },
   ));
 
   const toggles = document.createElement("div");
@@ -244,7 +313,24 @@ function openSettings() {
   easyRow.append(easyLabel, buildSwitch(!!prefs.showTargetWhileSinging, (b) => {
     prefs.showTargetWhileSinging = b; savePrefs(prefs); trace?.setShowTargetWhileSinging(b);
   }));
-  toggles.append(easyRow);
+
+  const warmupRow = document.createElement("div");
+  warmupRow.className = "switch-row";
+  const warmupLabel = document.createElement("div");
+  warmupLabel.innerHTML = `<div class="switch-label">Warm-up scale</div><div class="switch-sub">Show an ascending scale in the upcoming key</div>`;
+  warmupRow.append(warmupLabel, buildSwitch(!!prefs.showWarmupScale, (b) => {
+    prefs.showWarmupScale = b; savePrefs(prefs); renderCurrentScreen();
+  }));
+
+  const refRow = document.createElement("div");
+  refRow.className = "switch-row";
+  const refLabel = document.createElement("div");
+  refLabel.innerHTML = `<div class="switch-label">Reference pitch</div><div class="switch-sub">Show G4 (women) or G3 (men) labelled by scale degree — for ear training</div>`;
+  refRow.append(refLabel, buildSwitch(!!prefs.showReferencePitch, (b) => {
+    prefs.showReferencePitch = b; savePrefs(prefs); renderCurrentScreen();
+  }));
+
+  toggles.append(easyRow, refRow, warmupRow);
 
   const actions = document.createElement("div");
   actions.className = "modal-actions";
@@ -265,19 +351,21 @@ function openSettings() {
  *  score, the displayed staff position matches the cue pitch.
  * ------------------------------------------------------------- */
 function buildKeyReferenceAbc(
-  sourceKey: string, clef: string, currentTranspose: number, cueTonicMidi: number,
+  sourceKey: string, clef: string, currentTranspose: number, cueTonicMidi: number, minor: boolean,
 ): string {
-  // The cue plays tonic – dominant – tonic at the same octave.
+  // The cue plays tonic – dominant – tonic at the same octave. In la-based
+  // minor those degrees are la – mi – la.
   const targets = [cueTonicMidi, cueTonicMidi + 7, cueTonicMidi];
   const tokens = targets.map((sounding) =>
     midiToAbcToken(sounding - currentTranspose, sourceKey),
   );
+  const [t1, dom, t2] = minor ? ["la", "mi", "la"] : ["do", "so", "do"];
   return [
     "X:1",
     "M:none",
     "L:1/2",
     `K:${sourceKey} clef=${clef}`,
-    `"do"${tokens[0]} "so"${tokens[1]} "do"${tokens[2]} |]`,
+    `"${t1}"${tokens[0]} "${dom}"${tokens[1]} "${t2}"${tokens[2]} |]`,
   ].join("\n");
 }
 
@@ -346,11 +434,121 @@ function buildChoraleLyricsHtml(phrase: PhraseRow): string {
  *  Phrase view
  * ------------------------------------------------------------- */
 
+/* ------------------------------------------------------------- *
+ *  Warm-up page — shown before the score view whenever the reference-pitch
+ *  or warm-up-scale toggle is on. Practice mode is already running so the
+ *  singer can hum along to the reference and the ascending scale before
+ *  meeting the phrase itself. Click "Continue" to reach the score.
+ * ------------------------------------------------------------- */
+
+function renderWarmupPage() {
+  if (!prefs.voice) return openOnboarding();
+  if (!currentPhrase) currentPhrase = phraseForDate(dataset.phrases);
+
+  const transpose = customTranspose ?? chooseTransposition(
+    currentPhrase.ambitus_lo, currentPhrase.ambitus_hi, prefs.voice, currentPhrase.part,
+  );
+  const soundingLo = currentPhrase.ambitus_lo + transpose;
+  const soundingHi = currentPhrase.ambitus_hi + transpose;
+  const clef = chooseClef(prefs.voice, soundingLo, soundingHi);
+  const staffOffset = CLEF_STAFF_OFFSET[clef] ?? 0;
+  const sourceKey = extractKey(currentPhrase.abc);
+  const { pc: sourceTonicPc, minor } = tonicPc(sourceKey);
+  const transposedTonicPc = ((sourceTonicPc + transpose) % 12 + 12) % 12;
+  const phraseMid = (soundingLo + soundingHi) / 2;
+  const cueTonicMidi = pickTonicMidi(transposedTonicPc, phraseMid);
+  const refMidi = referenceMidiForVoice(prefs.voice);
+
+  const choraleInfo = dataset.chorales[String(currentPhrase.chorale)];
+  const choraleTitle = choraleInfo?.title ?? `BWV ${currentPhrase.chorale}`;
+  const refSyll = solfegeFor(refMidi, transposedTonicPc, minor);
+
+  const refHtml = prefs.showReferencePitch
+    ? `<section class="warmup-card">
+        <div class="warmup-card-head">
+          <span class="warmup-card-title">Reference pitch</span>
+          <button id="warmup-ref-play" class="secondary tiny">▶ Play</button>
+        </div>
+        <div id="warmup-ref-staff" class="warmup-staff"></div>
+        <p class="warmup-card-sub">${midiToNoteName(refMidi)} is "<strong>${refSyll}</strong>" in the upcoming key.</p>
+      </section>`
+    : "";
+
+  const scaleHtml = prefs.showWarmupScale
+    ? `<section class="warmup-card">
+        <div class="warmup-card-head">
+          <span class="warmup-card-title">Warm-up scale</span>
+          <button id="warmup-scale-play" class="secondary tiny">▶ Play</button>
+        </div>
+        <div id="warmup-scale-staff" class="warmup-staff"></div>
+        <p class="warmup-card-sub">Sing along — the tuner below colours your pitch.</p>
+      </section>`
+    : "";
+
+  const app = document.getElementById("app")!;
+  app.innerHTML = `
+    <section class="fade-in warmup-page">
+      <div class="title-row"><h2>Warm-up</h2></div>
+      <div class="meta">Up next · ${escapeHtml(choraleTitle)} · BWV ${currentPhrase.chorale} · ${partLabel(currentPhrase.part)} · phrase ${currentPhrase.phrase}</div>
+      ${refHtml}
+      ${scaleHtml}
+      <canvas id="warmup-trace-canvas"></canvas>
+      <div class="controls-bar">
+        <span class="spacer"></span>
+        <button id="warmup-continue-btn">Continue to phrase →</button>
+      </div>
+    </section>
+  `;
+
+  if (prefs.showReferencePitch) {
+    abcjs.renderAbc("warmup-ref-staff", buildReferenceAbc(sourceKey, clef, transpose, refMidi), {
+      visualTranspose: transpose + staffOffset,
+      staffwidth: 140, scale: 0.8,
+      paddingleft: 0, paddingright: 0, paddingtop: 0, paddingbottom: 0,
+    });
+    (document.getElementById("warmup-ref-play") as HTMLButtonElement).onclick = () =>
+      playReferencePitch(refMidi);
+  }
+  if (prefs.showWarmupScale) {
+    abcjs.renderAbc("warmup-scale-staff", buildWarmupAbc(sourceKey, clef, transpose, cueTonicMidi, minor), {
+      visualTranspose: transpose + staffOffset,
+      staffwidth: 360, scale: 0.8,
+      paddingleft: 0, paddingright: 0, paddingtop: 0, paddingbottom: 0,
+    });
+    (document.getElementById("warmup-scale-play") as HTMLButtonElement).onclick = () =>
+      playScale(cueTonicMidi, minor);
+  }
+
+  // Practice tuner uses the warm-up scale as its target so the singer sees
+  // green when they hit any scale degree of the upcoming key.
+  const offs = minor ? MINOR_SCALE_OFFSETS : MAJOR_SCALE_OFFSETS;
+  const scaleTargets = offs.map((o) => ({ midi: cueTonicMidi + o, duration: 1 }));
+  const canvas = document.getElementById("warmup-trace-canvas") as HTMLCanvasElement;
+  const warmupTrace = new LiveTraceRenderer(canvas, scaleTargets, 4, {
+    showTargetWhileSinging: true,
+    tonicPc: transposedTonicPc,
+  });
+  warmupTrace.setPracticeMode(true);
+  if (prefs.showReferencePitch) warmupTrace.setReferencePitch(refMidi);
+
+  stopWarmupDetector();
+  warmupDetector = new LivePitchDetector();
+  warmupDetector.start((p) => warmupTrace.addPoint(p)).catch((e) => {
+    console.warn("warm-up practice mic failed:", e);
+  });
+
+  (document.getElementById("warmup-continue-btn") as HTMLButtonElement).onclick = () => {
+    stopWarmupDetector();
+    currentScreen = "phrase";
+    renderPhraseView();
+  };
+}
+
 function renderPhraseView() {
   if (!prefs.voice) return openOnboarding();
   if (!currentPhrase) currentPhrase = phraseForDate(dataset.phrases);
 
-  currentTranspose = chooseTransposition(
+  currentTranspose = customTranspose ?? chooseTransposition(
     currentPhrase.ambitus_lo, currentPhrase.ambitus_hi, prefs.voice, currentPhrase.part,
   );
   const soundingLo = currentPhrase.ambitus_lo + currentTranspose;
@@ -375,12 +573,18 @@ function renderPhraseView() {
   // otherwise need to drop down to enter the line.
   const phraseMid = (soundingLo + soundingHi) / 2;
   const cueTonicMidi = pickTonicMidi(transposedTonicPc, phraseMid);
-  const referenceAbc = buildKeyReferenceAbc(sourceKey, clef, currentTranspose, cueTonicMidi);
+  const isMinor = tonicPc(sourceKey).minor;
+  const tonicLabel = isMinor ? "la" : "do";
+  const dominantLabel = isMinor ? "mi" : "so";
+  const referenceAbc = buildKeyReferenceAbc(sourceKey, clef, currentTranspose, cueTonicMidi, isMinor);
   const lyricsHtml = buildChoraleLyricsHtml(currentPhrase);
 
   const choraleInfo = dataset.chorales[String(currentPhrase.chorale)];
   const choraleTitle = choraleInfo?.title ?? `BWV ${currentPhrase.chorale}`;
-  const modeBadge = currentMode === "shuffle" ? ` <span class="muted">(shuffle)</span>` : "";
+  const modeBadge =
+    currentMode === "shuffle" ? ` <span class="muted">(shuffle)</span>`
+    : currentMode === "permalink" ? ` <span class="muted">(shared link)</span>`
+    : "";
 
   const app = document.getElementById("app")!;
   app.innerHTML = `
@@ -391,22 +595,23 @@ function renderPhraseView() {
       <div class="meta">
         BWV ${currentPhrase.chorale} · ${partLabel(currentPhrase.part)} · phrase ${currentPhrase.phrase}
         · ${currentTranspose >= 0 ? "+" : ""}${currentTranspose} semitones for ${prefs.voice} · ${clef} clef
+        <button id="copy-link-btn" class="link-btn" title="Copy a permalink to this phrase">🔗 link</button>
       </div>
       <div class="key-ref-wrap">
         <div class="key-ref-label">
           <span class="key-ref-title">Key</span>
-          <span class="key-ref-sub">do – so – do</span>
+          <span class="key-ref-sub">${tonicLabel} – ${dominantLabel} – ${tonicLabel}</span>
         </div>
         <div id="key-ref" class="key-ref" aria-label="Key reference: do, so, do"></div>
       </div>
       <div id="score"></div>
       <div class="controls-bar">
-        <button id="cue-btn" class="secondary">♪ do – so – do</button>
-        ${prefs.showTargetWhileSinging ? `<button id="practice-btn" class="secondary">◐ Practice</button>` : ""}
+        <button id="cue-btn" class="secondary">♪ ${tonicLabel} – ${dominantLabel} – ${tonicLabel}</button>
+        <button id="practice-btn" class="secondary">◐ Practice</button>
         <button id="rec-btn">● Record</button>
         <span class="spacer"></span>
-        <button id="shuffle-btn" class="secondary" title="Pick a random phrase">⇄ Shuffle</button>
         <button id="daily-btn" class="secondary" ${currentMode === "daily" ? "hidden" : ""}>Today's phrase</button>
+        <button id="shuffle-btn" class="secondary" title="Pick a random phrase">⇄ Shuffle</button>
       </div>
       <div class="row" id="rec-status-row"><span id="rec-status" class="muted"></span></div>
       <canvas id="trace-canvas"></canvas>
@@ -441,10 +646,114 @@ function renderPhraseView() {
   wireCue();
   wireRecorder();
   wirePractice();
+  wireCopyLink();
   (document.getElementById("shuffle-btn") as HTMLButtonElement).onclick = loadShuffle;
   const dailyBtn = document.getElementById("daily-btn") as HTMLButtonElement | null;
   if (dailyBtn) dailyBtn.onclick = loadDaily;
   renderHistory();
+}
+
+/** Pitch-class offsets above the tonic for a one-octave ascending scale. */
+const MAJOR_SCALE_OFFSETS = [0, 2, 4, 5, 7, 9, 11, 12];
+const MINOR_SCALE_OFFSETS = [0, 2, 3, 5, 7, 8, 10, 12];
+
+function buildWarmupAbc(
+  sourceKey: string, clef: string, currentTranspose: number, cueTonicMidi: number, minor: boolean,
+): string {
+  const offs = minor ? MINOR_SCALE_OFFSETS : MAJOR_SCALE_OFFSETS;
+  const SYLLABLES = minor
+    ? ["la", "ti", "do", "re", "mi", "fa", "sol", "la"]
+    : ["do", "re", "mi", "fa", "sol", "la", "ti", "do"];
+  const tokens = offs.map((o, i) => {
+    const tok = midiToAbcToken(cueTonicMidi + o - currentTranspose, sourceKey);
+    return `"${SYLLABLES[i]}"${tok}`;
+  });
+  return [
+    "X:1",
+    "M:none",
+    "L:1/4",
+    `K:${sourceKey} clef=${clef}`,
+    tokens.join(" ") + " |]",
+  ].join("\n");
+}
+
+function buildReferenceAbc(
+  sourceKey: string, clef: string, currentTranspose: number, refMidi: number,
+): string {
+  const tok = midiToAbcToken(refMidi - currentTranspose, sourceKey);
+  return [
+    "X:1",
+    "M:none",
+    "L:1/2",
+    `K:${sourceKey} clef=${clef}`,
+    `${tok} |]`,
+  ].join("\n");
+}
+
+function referenceMidiForVoice(voice: VoiceType | null): number {
+  // Soprano / Mezzo / Alto reference at G4 (67), lower voices at G3 (55).
+  if (voice === "Soprano" || voice === "Mezzo-Soprano" || voice === "Alto") return 67;
+  return 55;
+}
+
+function midiToNoteName(midi: number): string {
+  const names = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
+  const oct = Math.floor(midi / 12) - 1;
+  return `${names[midi % 12]}${oct}`;
+}
+
+function playReferencePitch(midi: number) {
+  const ctx = new AudioContext();
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  const hz = 440 * Math.pow(2, (midi - 69) / 12);
+  osc.type = "triangle";
+  osc.frequency.value = hz;
+  const t0 = ctx.currentTime + 0.05;
+  const dur = 1.4;
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(0.18, t0 + 0.03);
+  g.gain.setValueAtTime(0.18, t0 + dur - 0.1);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(g).connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.05);
+  setTimeout(() => { void ctx.close(); }, (dur + 0.5) * 1000);
+}
+
+function playScale(tonicMidi: number, minor: boolean) {
+  const offs = minor ? MINOR_SCALE_OFFSETS : MAJOR_SCALE_OFFSETS;
+  const ctx = new AudioContext();
+  const dur = 0.4;
+  let t = ctx.currentTime + 0.05;
+  for (const o of offs) {
+    const hz = 440 * Math.pow(2, (tonicMidi + o - 69) / 12);
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = "triangle";
+    osc.frequency.value = hz;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.16, t + 0.02);
+    g.gain.setValueAtTime(0.16, t + dur - 0.06);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(g).connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + dur + 0.04);
+    t += dur;
+  }
+  setTimeout(() => { void ctx.close(); }, (offs.length * dur + 0.5) * 1000);
+}
+
+function wireCopyLink() {
+  const btn = document.getElementById("copy-link-btn") as HTMLButtonElement | null;
+  if (!btn || !currentPhrase) return;
+  btn.onclick = async () => {
+    const hash = permalinkFor(currentPhrase!, customTranspose ?? undefined);
+    const url = `${window.location.origin}${window.location.pathname}#${hash}`;
+    try { await navigator.clipboard.writeText(url); btn.textContent = "✓ copied"; }
+    catch { btn.textContent = "(copy failed)"; }
+    setTimeout(() => { btn.textContent = "🔗 link"; }, 1500);
+  };
 }
 
 function wirePractice() {
@@ -454,6 +763,8 @@ function wirePractice() {
   let active = false;
   btn.onclick = async () => {
     if (!active) {
+      // Practice always reveals target pitches — independent of the
+      // sight-reading "easy mode" preference.
       try {
         await detector.start((p) => trace?.addPoint(p));
       } catch (e) {
@@ -500,16 +811,24 @@ function wireRecorder() {
     : [];
   const sourceTonic = currentPhrase ? tonicPc(extractKey(currentPhrase.abc)).pc : 0;
   const transposedTonicPc = ((sourceTonic + currentTranspose) % 12 + 12) % 12;
+  const estimatedDuration = Math.max(2, targetNotes.length * 0.6);
   trace = new LiveTraceRenderer(
-    canvas, targetNotes, Math.max(2, targetNotes.length * 0.6),
+    canvas, targetNotes, estimatedDuration,
     {
       showTargetWhileSinging: !!prefs.showTargetWhileSinging,
       tonicPc: transposedTonicPc,
     },
   );
+  if (prefs.showReferencePitch) trace.setReferencePitch(referenceMidiForVoice(prefs.voice));
 
   btn.onclick = async () => {
     if (!isRecording) {
+      // Retry support: if a previous attempt has already frozen the trace,
+      // unfreeze + clear it before the next take. The share canvas and
+      // score row stay visible from the previous attempt until the new
+      // recording finishes so the user can still grab the old image.
+      if (trace) trace.reset(estimatedDuration);
+      if (prefs.showReferencePitch) trace?.setReferencePitch(referenceMidiForVoice(prefs.voice));
       status.textContent = "loading pitch model…";
       try {
         await detector.start((p) => trace?.addPoint(p));
@@ -519,7 +838,9 @@ function wireRecorder() {
       }
       isRecording = true;
       btn.textContent = "■ Stop";
-      status.textContent = "recording — sing the phrase…";
+      status.textContent = attemptNum > 0
+        ? `recording attempt ${attemptNum + 1} — sing the phrase…`
+        : "recording — sing the phrase…";
       scoreRow.hidden = true;
       return;
     }
@@ -539,8 +860,12 @@ function wireRecorder() {
       `${hits}/${perNote.length} within ±60¢` +
       (meanCentsError > 0 ? ` <span class="err">· mean ${meanCentsError.toFixed(0)}¢</span>` : "");
 
+    attemptNum++;
     lastReport = { score, meanCentsError, frames: [] };
-    if (currentMode === "daily") {
+    // Only persist the first take for the day, so the daily history reflects
+    // a true sight-reading. Subsequent attempts still get a score and share
+    // image but don't overwrite the recorded one.
+    if (currentMode === "daily" && attemptNum === 1) {
       appendHistory({
         date: todayKey(),
         chorale: currentPhrase!.chorale,
@@ -567,7 +892,8 @@ async function drawShare() {
       { score: lastReport.score, meanCentsError: lastReport.meanCentsError },
       {
         title: choraleTitle,
-        subtitle: `BWV ${currentPhrase.chorale} · ${partLabel(currentPhrase.part)} · phrase ${currentPhrase.phrase}`,
+        subtitle: `BWV ${currentPhrase.chorale} · ${partLabel(currentPhrase.part)} · phrase ${currentPhrase.phrase}`
+          + (attemptNum > 1 ? ` · attempt ${attemptNum}` : ""),
         date: todayKey(),
       },
     );

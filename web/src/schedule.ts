@@ -79,3 +79,41 @@ export function phraseForDate(rows: PhraseRow[], date: Date = new Date()): Phras
 export function randomPhrase(rows: PhraseRow[]): PhraseRow {
   return rows[Math.floor(Math.random() * rows.length)];
 }
+
+/** Permalink parsed from the URL hash, e.g. `#p=1.S01&t=-3`. */
+export interface Permalink {
+  chorale: number;
+  part: "S" | "A" | "T" | "B";
+  phrase: string;
+  /** Custom transposition in semitones — overrides the voice-derived one. */
+  transpose?: number;
+}
+
+export function parsePermalink(hash: string = window.location.hash): Permalink | null {
+  const trimmed = hash.replace(/^#/, "");
+  if (!trimmed) return null;
+  const params = new URLSearchParams(trimmed);
+  const p = params.get("p");
+  if (!p) return null;
+  const m = p.match(/^(\d+)\.([SATB])(\d+)$/);
+  if (!m) return null;
+  const out: Permalink = {
+    chorale: parseInt(m[1], 10),
+    part: m[2] as "S" | "A" | "T" | "B",
+    phrase: m[3],
+  };
+  const t = params.get("t");
+  if (t != null && /^-?\d+$/.test(t)) out.transpose = parseInt(t, 10);
+  return out;
+}
+
+export function findPhrase(rows: PhraseRow[], pl: Permalink): PhraseRow | null {
+  return rows.find(
+    (r) => r.chorale === pl.chorale && r.part === pl.part && r.phrase === pl.phrase,
+  ) ?? null;
+}
+
+export function permalinkFor(row: PhraseRow, transpose?: number): string {
+  const base = `p=${row.chorale}.${row.part}${row.phrase}`;
+  return transpose != null ? `${base}&t=${transpose}` : base;
+}

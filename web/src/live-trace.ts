@@ -203,6 +203,8 @@ export class LiveTraceRenderer {
     const showTarget = this.frozen || this.showTargetWhileSinging || this.practiceMode;
     if (showTarget) this.drawTargetBars();
 
+    if (this.referenceMidi != null) this.drawReferencePitchLine();
+
     if (this.practiceMode) {
       // Tuner-style display: a full-width horizontal line at the singer's
       // current pitch so it's easy to slide it onto a target bar.
@@ -232,6 +234,28 @@ export class LiveTraceRenderer {
         ctx.fill();
       }
     }
+  }
+
+  private drawReferencePitchLine() {
+    if (this.referenceMidi == null) return;
+    const ctx = this.ctx;
+    const w = this.canvas.width / (window.devicePixelRatio || 1);
+    const y = this.midiToY(this.referenceMidi);
+    if (y < 0 || y > this.canvas.height / (window.devicePixelRatio || 1)) return;
+    ctx.save();
+    ctx.strokeStyle = "#9333ea";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([2, 4]);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#9333ea";
+    ctx.font = "11px sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.fillText("ref", 4, y - 8);
+    ctx.restore();
   }
 
   private drawTargetBars() {
@@ -319,16 +343,18 @@ export class LiveTraceRenderer {
     return cents <= this.toleranceForTarget(target) ? "#15803d" : "#b91c1c";
   }
 
-  /** Per-target-note score using the voiced span as the time base. */
-  computeScore(): TraceScore {
+  /** Score for one specific (start, end) voiced window of the recording.
+   *  Used internally by {@link computeScore} which searches over candidate
+   *  windows to find the alignment that best matches the target rhythm. */
+  private scoreForWindow(start: number, end: number): TraceScore {
     const N = this.targetNotes.length;
-    const span = this.viewEnd - this.viewStart;
+    const span = end - start;
     if (N === 0 || span <= 0) return { score: 0, meanCentsError: 0, perNote: [] };
     const perNote: TraceScore["perNote"] = [];
     let hits = 0, voiced = 0, errSum = 0;
     for (let i = 0; i < N; i++) {
-      const t0 = this.viewStart + this.slotEdges[i] * span;
-      const t1 = this.viewStart + this.slotEdges[i + 1] * span;
+      const t0 = start + this.slotEdges[i] * span;
+      const t1 = start + this.slotEdges[i + 1] * span;
       const candidates = this.points
         .filter((p) => p.midi != null && p.time >= t0 && p.time < t1)
         .map((p) => p.midi!) as number[];
@@ -352,6 +378,73 @@ export class LiveTraceRenderer {
     }
     return { score: hits / N, meanCentsError: voiced ? errSum / voiced : 0, perNote };
   }
+
+  /** Per-target-note score using the voiced span as the time base. Searches
+   * over a small grid of (start, end) windows around the trimmed voiced span
+   * so leading/trailing silence — or a slight tempo mismatch — doesn't
+   * penalise the singer. The best-scoring window also updates viewStart /
+   * viewEnd so the rendered target bars line up with the chosen alignment. */
+  computeScore(): TraceScore {
+    const N = this.targetNotes.length;
+    if (N === 0) return { score: 0, meanCentsError: 0, perNote: [] };
+
+    // Use the voiced span as the search anchor — falls back to the current
+    // view if too few voiced frames to be meaningful.
+    const voiced = this.points.filter((p) => p.midi != null);
+    let anchorStart = this.viewStart;
+    let anchorEnd = this.viewEnd;
+    if (voiced.length >= 2) {
+      anchorStart = voiced[0].time;
+      anchorEnd = voiced[voiced.length - 1].time;
+    }
+    const anchorSpan = anchorEnd - anchorStart;
+    if (anchorSpan <= 0) return this.scoreForWindow(anchorStart, anchorEnd);
+
+    // Grid: shift start and end by ±25% of the voiced span (in steps of 5%).
+    // This is a coarse but effective optimistic-rhythm fit — silence at either
+    // end is shrunk away, and a small tempo mismatch is absorbed.
+    const SHIFTS = [-0.25, -0.15, -0.08, -0.04, 0, 0.04, 0.08, 0.15, 0.25];
+    let best: TraceScore | null = null;
+    let bestStart = anchorStart, bestEnd = anchorEnd;
+    for (const ds of SHIFTS) {
+      for (const de of SHIFTS) {
+        const s = anchorStart + ds * anchorSpan;
+        const e = anchorEnd + de * anchorSpan;
+        if (e - s <= 0.2 * anchorSpan) continue;
+        const res = this.scoreForWindow(s, e);
+        const better = !best
+          || res.score > best.score
+          || (res.score === best.score && res.meanCentsError < best.meanCentsError);
+        if (better) { best = res; bestStart = s; bestEnd = e; }
+      }
+    }
+    if (best) {
+      this.viewStart = bestStart;
+      this.viewEnd = bestEnd;
+      this.draw();
+      return best;
+    }
+    return this.scoreForWindow(anchorStart, anchorEnd);
+  }
+
+  /** Unfreeze and clear the trace so the next recording starts fresh.
+   * Restores the original view so target bars sit where they did initially. */
+  reset(estimatedDuration: number) {
+    this.points = [];
+    this.frozen = false;
+    this.viewStart = 0;
+    this.viewEnd = Math.max(1, estimatedDuration);
+    this.draw();
+  }
+
+  /** Draw a single horizontal "reference pitch" line — used when the user has
+   * the on-load reference-pitch toggle on. Returns whether the pitch lies
+   * within the visible MIDI range (so callers can decide to scroll labels). */
+  setReferencePitch(midi: number | null) {
+    this.referenceMidi = midi;
+    this.draw();
+  }
+  private referenceMidi: number | null = null;
 
   getPoints(): PitchPoint[] { return this.points; }
   getTargetNotes(): TargetNote[] { return this.targetNotes; }

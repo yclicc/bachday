@@ -400,3 +400,82 @@ select:focus, input:focus { outline: none; border-color: var(--fg); }
   .controls-bar button { flex: 1 1 auto; }
   .modal { padding: 1.15rem; border-radius: 12px; }
 }
+
+/* Warm-up scale + reference pitch panels — small staves sitting above the
+ * main key reference, each with its own play button and label. */
+.warmup-wrap, .reference-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.4rem 0.8rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 0.5rem;
+  box-shadow: var(--shadow-sm);
+}
+.warmup-label, .reference-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.reference-sub { font-size: 0.8rem; color: var(--muted); }
+#warmup-staff, #reference-staff { flex: 1; line-height: 0; }
+#warmup-staff svg, #reference-staff svg { display: block; }
+button.tiny { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+
+.link-btn {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  padding: 0 0.3rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.link-btn:hover { color: var(--fg); background: transparent; }
+
+/* Warm-up page — separate pre-phrase screen with reference pitch and the
+ * ascending warm-up scale. Practice mode is auto-on so the user can sing
+ * along to either of the cards while the tuner colours their pitch. */
+.warmup-page { display: block; }
+.warmup-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 0.9rem 1.1rem;
+  margin: 0.7rem 0;
+  box-shadow: var(--shadow-sm);
+}
+.warmup-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.45rem;
+}
+.warmup-card-title {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.warmup-card-sub {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.warmup-staff { line-height: 0; overflow-x: auto; }
+.warmup-staff svg { display: block; }
+#warmup-trace-canvas { width: 100%; height: 160px; display: block; margin-top: 0.5rem; }
+
+/* Same staggered fade-in as the main score page so the warm-up doesn't feel
+ * like a different app. */
+.fade-in.warmup-page > .title-row    { animation: fadeIn 700ms cubic-bezier(0.16, 1, 0.3, 1)  60ms both; }
+.fade-in.warmup-page > .meta         { animation: fadeIn 700ms cubic-bezier(0.16, 1, 0.3, 1) 160ms both; }
+.fade-in.warmup-page > .warmup-card:nth-of-type(1) { animation: fadeIn 800ms cubic-bezier(0.16, 1, 0.3, 1) 280ms both; }
+.fade-in.warmup-page > .warmup-card:nth-of-type(2) { animation: fadeIn 800ms cubic-bezier(0.16, 1, 0.3, 1) 420ms both; }
+.fade-in.warmup-page > #warmup-trace-canvas        { animation: fadeIn 800ms cubic-bezier(0.16, 1, 0.3, 1) 560ms both; }
+.fade-in.warmup-page > .controls-bar               { animation: fadeIn 700ms cubic-bezier(0.16, 1, 0.3, 1) 700ms both; }

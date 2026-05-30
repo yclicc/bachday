@@ -70,8 +70,16 @@ def slice_part(part: stream.Part, start: float, end: float) -> stream.Part:
     cls = flat.getElementsByClass(clef.Clef)
     if cls:
         sliced.insert(0, copy.deepcopy(cls[0]))
-    measured = sliced.makeMeasures(inPlace=False)
-    return cast(stream.Part, measured)
+    measured = cast(stream.Part, sliced.makeMeasures(inPlace=False))
+    # Re-state accidentals from scratch: a phrase boundary can fall mid-measure
+    # in the original chorale, so an accidental that's already in force from an
+    # earlier beat of that measure would otherwise disappear, silently turning
+    # an F# into F natural. overrideStatus=True forces a fresh pass.
+    try:
+        measured.makeAccidentals(inPlace=True, overrideStatus=True)
+    except Exception:
+        pass
+    return measured
 
 
 def ambitus(part: stream.Part) -> tuple[int, int] | None:
