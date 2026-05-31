@@ -11,10 +11,6 @@ __pycache__/
 
 # Generated dataset (regenerate with process_dataset.py)
 dataset/
-web/public/phrases.json
-
-# Local Bach portrait asset (user-provided)
-web/public/bach.jpg
 
 # Node / Vite
 web/node_modules/
