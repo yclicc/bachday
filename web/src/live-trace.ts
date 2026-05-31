@@ -61,6 +61,9 @@ export class LiveTraceRenderer {
   private rafHandle = 0;
   private centreMidi: number;
   private pitchRange: number;
+  /** Initial view width — retained so {@link resetPoints} can restore the
+   *  view after a previous take has narrowed it via freeze(). */
+  private initialDuration: number;
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -70,7 +73,8 @@ export class LiveTraceRenderer {
   ) {
     this.ctx = canvas.getContext("2d")!;
     this.targetNotes = targetNotes;
-    this.viewEnd = Math.max(1, estimatedDuration);
+    this.initialDuration = Math.max(1, estimatedDuration);
+    this.viewEnd = this.initialDuration;
     this.showTargetWhileSinging = !!opts.showTargetWhileSinging;
     this.tonicPc = opts.tonicPc ?? null;
 
@@ -113,10 +117,15 @@ export class LiveTraceRenderer {
     this.draw();
   }
 
-  /** Drop accumulated points so practice doesn't grow unbounded between
-   *  sessions and the last-pitch indicator doesn't lag stale data. */
+  /** Drop accumulated points and unfreeze the view, so a new live session
+   *  (practice or recording) starts on a blank trace. If a previous take
+   *  froze the view to its voiced span, restore the original time window so
+   *  incoming points have somewhere to land. */
   resetPoints() {
     this.points = [];
+    this.frozen = false;
+    this.viewStart = 0;
+    this.viewEnd = this.initialDuration;
     this.draw();
   }
 
@@ -346,37 +355,55 @@ export class LiveTraceRenderer {
   /** Score for one specific (start, end) voiced window of the recording.
    *  Used internally by {@link computeScore} which searches over candidate
    *  windows to find the alignment that best matches the target rhythm. */
+  /** Score for one specific (start, end) window. A target slot counts as a
+   *  hit only if at least 50% of its total frames sit within the per-target
+   *  tolerance — so brushing past the right pitch is no longer enough. The
+   *  reported `sung` is still the in-slot median (informational only). */
   private scoreForWindow(start: number, end: number): TraceScore {
     const N = this.targetNotes.length;
     const span = end - start;
     if (N === 0 || span <= 0) return { score: 0, meanCentsError: 0, perNote: [] };
     const perNote: TraceScore["perNote"] = [];
-    let hits = 0, voiced = 0, errSum = 0;
+    let hits = 0, voicedSlots = 0, errSum = 0;
+    const HIT_FRACTION_THRESHOLD = 0.5;
     for (let i = 0; i < N; i++) {
       const t0 = start + this.slotEdges[i] * span;
       const t1 = start + this.slotEdges[i + 1] * span;
-      const candidates = this.points
-        .filter((p) => p.midi != null && p.time >= t0 && p.time < t1)
-        .map((p) => p.midi!) as number[];
+      const inSlot = this.points.filter((p) => p.time >= t0 && p.time < t1);
+      const voicedFrames = inSlot.filter((p) => p.midi != null).map((p) => p.midi!) as number[];
+
       let sung: number | null = null;
-      if (candidates.length) {
-        candidates.sort((a, b) => a - b);
-        sung = candidates[Math.floor(candidates.length / 2)];
-      }
-      const target = this.targetNotes[i].midi;
       let cents: number | null = null;
-      if (sung != null) {
+      const target = this.targetNotes[i].midi;
+      const tol = this.toleranceForTarget(target);
+
+      if (voicedFrames.length) {
+        const sorted = [...voicedFrames].sort((a, b) => a - b);
+        sung = sorted[Math.floor(sorted.length / 2)];
         let s = sung;
         while (s - target > 6) s -= 12;
         while (target - s > 6) s += 12;
         cents = (s - target) * 100;
-        voiced++;
+        voicedSlots++;
         errSum += Math.abs(cents);
-        if (Math.abs(cents) <= this.toleranceForTarget(target)) hits++;
+      }
+
+      // Hit test uses the fraction of TOTAL slot frames (voiced or not) that
+      // landed within tolerance. Silent frames count against the singer.
+      const totalSlotFrames = inSlot.length;
+      if (totalSlotFrames > 0) {
+        let inTol = 0;
+        for (const m of voicedFrames) {
+          let s = m;
+          while (s - target > 6) s -= 12;
+          while (target - s > 6) s += 12;
+          if (Math.abs((s - target) * 100) <= tol) inTol++;
+        }
+        if (inTol / totalSlotFrames >= HIT_FRACTION_THRESHOLD) hits++;
       }
       perNote.push({ target, sung, cents });
     }
-    return { score: hits / N, meanCentsError: voiced ? errSum / voiced : 0, perNote };
+    return { score: hits / N, meanCentsError: voicedSlots ? errSum / voicedSlots : 0, perNote };
   }
 
   /** Per-target-note score using the voiced span as the time base. Searches
@@ -400,10 +427,11 @@ export class LiveTraceRenderer {
     const anchorSpan = anchorEnd - anchorStart;
     if (anchorSpan <= 0) return this.scoreForWindow(anchorStart, anchorEnd);
 
-    // Grid: shift start and end by ±25% of the voiced span (in steps of 5%).
-    // This is a coarse but effective optimistic-rhythm fit — silence at either
-    // end is shrunk away, and a small tempo mismatch is absorbed.
-    const SHIFTS = [-0.25, -0.15, -0.08, -0.04, 0, 0.04, 0.08, 0.15, 0.25];
+    // Affine time-warp search: independent start- and end-shifts as a
+    // fraction of the voiced span. Equivalent to t' = a·t + b — any linear /
+    // affine rescaling that improves the score is accepted. Range goes out
+    // to ±30% so leading or trailing silence can be shrunk away.
+    const SHIFTS = [-0.30, -0.20, -0.12, -0.06, -0.03, 0, 0.03, 0.06, 0.12, 0.20, 0.30];
     let best: TraceScore | null = null;
     let bestStart = anchorStart, bestEnd = anchorEnd;
     for (const ds of SHIFTS) {
@@ -427,15 +455,6 @@ export class LiveTraceRenderer {
     return this.scoreForWindow(anchorStart, anchorEnd);
   }
 
-  /** Unfreeze and clear the trace so the next recording starts fresh.
-   * Restores the original view so target bars sit where they did initially. */
-  reset(estimatedDuration: number) {
-    this.points = [];
-    this.frozen = false;
-    this.viewStart = 0;
-    this.viewEnd = Math.max(1, estimatedDuration);
-    this.draw();
-  }
 
   /** Draw a single horizontal "reference pitch" line — used when the user has
    * the on-load reference-pitch toggle on. Returns whether the pitch lies

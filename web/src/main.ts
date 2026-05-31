@@ -938,7 +938,7 @@ function wireRecorder() {
       // unfreeze + clear it before the next take. The share canvas and
       // score row stay visible from the previous attempt until the new
       // recording finishes so the user can still grab the old image.
-      if (trace) trace.reset(estimatedDuration);
+      trace?.resetPoints();
       if (prefs.showReferencePitch) trace?.setReferencePitch(referenceMidiForVoice(prefs.voice));
       status.textContent = "loading pitch model…";
       try {
