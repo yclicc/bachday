@@ -20,7 +20,7 @@ import { renderShareCanvas, type AccuracyReport } from "./accuracy";
 import { loadPrefs, savePrefs, loadHistory, appendHistory, type Prefs } from "./storage";
 import type { SolfegeMode } from "./solfege";
 
-const PORTRAIT_URL = "/bach.jpg";
+const PORTRAIT_URL = new URL("bach.jpg", document.baseURI).toString();
 let prefs: Prefs = loadPrefs();
 let dataset: Dataset = { chorales: {}, lyrics: {}, phrases: [] };
 let currentPhrase: PhraseRow | null = null;
