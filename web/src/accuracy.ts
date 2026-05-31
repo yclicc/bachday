@@ -5,6 +5,7 @@
  * not — matching the live trace. */
 
 import type { LiveTraceRenderer } from "./live-trace";
+import QRCode from "qrcode";
 
 export interface AccuracyReport {
   score: number;
@@ -25,6 +26,15 @@ export async function renderShareCanvas(
   trace: LiveTraceRenderer,
   score: { score: number; meanCentsError: number },
   caption: ShareCaption,
+  /** Permalink URL to the specific phrase. Rendered as a QR code in the
+   *  share image's bottom corner so paper-printed shares can scan straight to
+   *  the right passage. */
+  permalinkUrl?: string,
+  /** URL printed in plain text under the QR. Defaults to the permalink, but
+   *  callers usually pass the bare root URL — the permalink is already in the
+   *  QR and the visible line is just there to tell someone reading on paper
+   *  what site to visit. */
+  displayUrl?: string,
 ): Promise<void> {
   const img = await loadImage(portraitSrc).catch(() => null);
 
@@ -76,14 +86,49 @@ export async function renderShareCanvas(
   roundRect(ctx, panelX, panelY, panelW, panelH, 14);
   ctx.fill();
 
-  drawTraceInto(ctx, trace, panelX + 16, panelY + 16, panelW - 32, panelH - 48);
+  // Reserve room on the right of the panel for a QR + URL block when a
+  // permalink is supplied; otherwise the trace uses the full panel width.
+  const qrSize = permalinkUrl ? 140 : 0;
+  const qrGutter = permalinkUrl ? 20 : 0;
+  const traceW = panelW - 32 - qrSize - qrGutter;
+  drawTraceInto(ctx, trace, panelX + 16, panelY + 16, traceW, panelH - 48);
+
+  if (permalinkUrl) {
+    const qrX = panelX + panelW - 16 - qrSize;
+    const qrY = panelY + 16;
+    try {
+      const qrDataUrl = await QRCode.toDataURL(permalinkUrl, {
+        margin: 1, width: qrSize, color: { dark: "#15171a", light: "#ffffff" },
+      });
+      const qrImg = await loadImage(qrDataUrl);
+      ctx.drawImage(qrImg, qrX, qrY, qrSize, qrSize);
+    } catch {
+      // QR generation failed — draw a placeholder box so layout stays stable.
+      ctx.strokeStyle = "#15171a";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(qrX, qrY, qrSize, qrSize);
+    }
+    ctx.fillStyle = "#15171a";
+    ctx.font = "400 11px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText(stripScheme(displayUrl ?? permalinkUrl), qrX + qrSize / 2, qrY + qrSize + 6);
+    ctx.textBaseline = "alphabetic";
+  }
 
   ctx.fillStyle = "#6b7280";
   ctx.font = "400 14px -apple-system, 'Inter', sans-serif";
   ctx.textAlign = "left";
   ctx.fillText(caption.subtitle, panelX + 16, panelY + panelH - 14);
   ctx.textAlign = "right";
-  ctx.fillText(caption.date, panelX + panelW - 16, panelY + panelH - 14);
+  const dateRightEdge = permalinkUrl
+    ? panelX + panelW - 16 - qrSize - qrGutter
+    : panelX + panelW - 16;
+  ctx.fillText(caption.date, dateRightEdge, panelY + panelH - 14);
+}
+
+function stripScheme(url: string): string {
+  return url.replace(/^https?:\/\//, "");
 }
 
 function truncateToWidth(ctx: CanvasRenderingContext2D, text: string, maxW: number): string {

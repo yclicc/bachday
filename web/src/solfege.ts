@@ -61,7 +61,60 @@ export function solfege(midi: number, tonicPc_: number, minor: boolean): string 
   }
   const pc = ((midi - tonicPc_) % 12 + 12) % 12;
   const s = SYLLABLES[pc];
-  return s.diatonic ? s.sharp : s.sharp; // prefer sharp-side for ascending feel
+  return s.diatonic ? s.sharp : s.sharp; // default for callers with no spelling info
+}
+
+/** Effective chromatic direction of a written note relative to its key
+ *  signature. Used to pick the right solfege syllable for a chromatic note:
+ *  a sharp (or a natural that cancels a key-sig flat) reads as raised →
+ *  sharp-side syllable; a flat (or natural cancelling a key-sig sharp) reads
+ *  as lowered → flat-side syllable. */
+export type AccidentalDirection = "sharp" | "flat" | "none";
+export function accidentalDirection(
+  inlineAccidental: string, keySigForLetter: number,
+): AccidentalDirection {
+  if (inlineAccidental === "^" || inlineAccidental === "^^") return "sharp";
+  if (inlineAccidental === "_" || inlineAccidental === "__") return "flat";
+  if (inlineAccidental === "=") {
+    if (keySigForLetter > 0) return "flat";  // natural cancels a key-sig sharp
+    if (keySigForLetter < 0) return "sharp"; // natural cancels a key-sig flat
+  }
+  return "none";
+}
+
+/** Solfege syllable using a known spelling. Prefer this over {@link solfege}
+ *  when the rendered accidental is known — it picks "ra" vs "di" (etc.) by
+ *  the direction the spelling implies, instead of defaulting blindly to one
+ *  side. */
+export function solfegeForSpelling(
+  midi: number, tonicPc_: number, minor: boolean, direction: AccidentalDirection,
+): string {
+  const pc = ((midi - tonicPc_) % 12 + 12) % 12;
+  if (minor) {
+    // La-based minor: relative-major syllable set, with explicit sharp/flat
+    // pairs for the chromatic positions so the spelling rule can pick.
+    const pairs: Record<number, [string, string]> = {
+      0: ["la", "la"],
+      1: ["li", "te"],
+      2: ["ti", "ti"],
+      3: ["do", "do"],
+      4: ["di", "ra"],
+      5: ["re", "re"],
+      6: ["ri", "me"],
+      7: ["mi", "mi"],
+      8: ["fa", "fa"],
+      9: ["fi", "se"],
+      10: ["sol", "sol"],
+      11: ["si", "le"],
+    };
+    const [sharp, flat] = pairs[pc];
+    if (direction === "flat") return flat;
+    if (direction === "sharp") return sharp;
+    return sharp; // diatonic — both entries equal
+  }
+  const s = SYLLABLES[pc];
+  if (s.diatonic) return s.sharp;
+  return direction === "flat" ? s.flat : s.sharp;
 }
 
 export function isChromatic(midi: number, tonicPc_: number, minor: boolean): boolean {

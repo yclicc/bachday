@@ -9,10 +9,10 @@ import {
 } from "./schedule";
 import {
   addSolfegeLyrics, setAbcClef, extractKey, midiToAbcToken,
-  abcSourceNoteSequence,
+  abcSourceNoteSequence, keyAccidentalsForKeyString,
   type VisualObj,
 } from "./abc";
-import { tonicPc, solfege as solfegeFor } from "./solfege";
+import { tonicPc, solfegeForSpelling, accidentalDirection } from "./solfege";
 import { LivePitchDetector, preloadCrepe } from "./pitch";
 import { LiveTraceRenderer } from "./live-trace";
 import { playDoSolDo, pickTonicMidi } from "./cue";
@@ -528,12 +528,26 @@ function renderWarmupPage() {
   const { pc: sourceTonicPc, minor } = tonicPc(sourceKey);
   const transposedTonicPc = ((sourceTonicPc + transpose) % 12 + 12) % 12;
   const phraseMid = (soundingLo + soundingHi) / 2;
-  const cueTonicMidi = pickTonicMidi(transposedTonicPc, phraseMid);
+  // Warm-up scale ascends an octave from its tonic, so anchor at (or just
+  // below) the phrase floor — the apex then lands inside the phrase rather
+  // than a sixth above it, which is what the user actually has to sing.
+  const warmupTonicMidi = pickTonicMidi(transposedTonicPc, soundingLo - 2);
   const refMidi = referenceMidiForVoice(prefs.voice);
 
   const choraleInfo = dataset.chorales[String(currentPhrase.chorale)];
   const choraleTitle = choraleInfo?.title ?? `BWV ${currentPhrase.chorale}`;
-  const refSyll = solfegeFor(refMidi, transposedTonicPc, minor);
+  // Pick the reference-pitch syllable from the spelling abcjs will actually
+  // render: a flat — or a natural that cancels a sharp key-sig accidental —
+  // reads as a lowered chromatic step ("ra"), while a sharp (or a natural
+  // cancelling a flat) reads as a raised one ("di").
+  const refKey = pcToKeyString(transposedTonicPc, minor);
+  const refTok = midiToAbcToken(refMidi, refKey);
+  const refAccMatch = refTok.match(/^(\^\^|\^|__|_|=)/);
+  const refLetterMatch = refTok.match(/[A-Ga-g]/);
+  const refLetter = (refLetterMatch?.[0] ?? "C").toUpperCase();
+  const refKeyAcc = keyAccidentalsForKeyString(refKey);
+  const refDir = accidentalDirection(refAccMatch?.[0] ?? "", refKeyAcc.get(refLetter) ?? 0);
+  const refSyll = solfegeForSpelling(refMidi, transposedTonicPc, minor, refDir);
 
   const refHtml = prefs.showReferencePitch
     ? `<section class="warmup-card">
@@ -573,8 +587,11 @@ function renderWarmupPage() {
   `;
 
   if (prefs.showReferencePitch) {
-    abcjs.renderAbc("warmup-ref-staff", buildReferenceAbc(sourceKey, clef, transpose, refMidi), {
-      visualTranspose: transpose + staffOffset,
+    // Render the reference straight in the sounding key with no transpose —
+    // what we write is what we see, so refMidi shows up at exactly that
+    // staff position. The clef (treble vs bass) is chosen inside the builder
+    // based on the pitch so the note never lands on ledger lines.
+    abcjs.renderAbc("warmup-ref-staff", buildReferenceAbc(transposedTonicPc, minor, refMidi), {
       staffwidth: 140, scale: 0.8,
       paddingleft: 0, paddingright: 0, paddingtop: 0, paddingbottom: 0,
     });
@@ -582,19 +599,19 @@ function renderWarmupPage() {
       playReferencePitch(refMidi);
   }
   if (prefs.showWarmupScale) {
-    abcjs.renderAbc("warmup-scale-staff", buildWarmupAbc(sourceKey, clef, transpose, cueTonicMidi, minor), {
+    abcjs.renderAbc("warmup-scale-staff", buildWarmupAbc(sourceKey, clef, transpose, warmupTonicMidi, minor), {
       visualTranspose: transpose + staffOffset,
       staffwidth: 360, scale: 0.8,
       paddingleft: 0, paddingright: 0, paddingtop: 0, paddingbottom: 0,
     });
     (document.getElementById("warmup-scale-play") as HTMLButtonElement).onclick = () =>
-      playScale(cueTonicMidi, minor);
+      playScale(warmupTonicMidi, minor);
   }
 
   // Practice tuner uses the warm-up scale as its target so the singer sees
   // green when they hit any scale degree of the upcoming key.
   const offs = minor ? MINOR_SCALE_OFFSETS : MAJOR_SCALE_OFFSETS;
-  const scaleTargets = offs.map((o) => ({ midi: cueTonicMidi + o, duration: 1 }));
+  const scaleTargets = offs.map((o) => ({ midi: warmupTonicMidi + o, duration: 1 }));
   const canvas = document.getElementById("warmup-trace-canvas") as HTMLCanvasElement;
   const warmupTrace = new LiveTraceRenderer(canvas, scaleTargets, 4, {
     showTargetWhileSinging: true,
@@ -693,7 +710,9 @@ function renderPhraseView() {
       ${lyricsHtml}
       <canvas id="share-canvas" hidden></canvas>
       <div class="row" id="share-row" hidden>
-        <button id="dl-btn" class="secondary">Download share image</button>
+        <button id="dl-share-btn" class="secondary">⤓ Download share image</button>
+        <button id="copy-share-btn" class="secondary">📋 Copy share image</button>
+        <span id="copy-share-status" class="muted"></span>
       </div>
       <section class="history" id="history"></section>
     </section>
@@ -749,17 +768,37 @@ function buildWarmupAbc(
   ].join("\n");
 }
 
+/** Build the reference-pitch staff: a single note drawn in the actual key the
+ *  phrase will sound in. Renders without visualTranspose — written pitch is
+ *  the sounding pitch — so the staff position is exactly the MIDI you asked
+ *  for, regardless of the phrase's chosen clef (treble-8 in particular was
+ *  drawing G3 at the G4 staff position, which read visually as G above
+ *  middle C). The clef is chosen from the pitch itself: treble for G4+,
+ *  bass for anything lower, so the note never needs ledger lines. */
 function buildReferenceAbc(
-  sourceKey: string, clef: string, currentTranspose: number, refMidi: number,
+  transposedTonicPc: number, minor: boolean, refMidi: number,
 ): string {
-  const tok = midiToAbcToken(refMidi - currentTranspose, sourceKey);
+  const clef = refMidi >= 60 ? "treble" : "bass";
+  const key = pcToKeyString(transposedTonicPc, minor);
+  const tok = midiToAbcToken(refMidi, key);
   return [
     "X:1",
     "M:none",
     "L:1/2",
-    `K:${sourceKey} clef=${clef}`,
+    `K:${key} clef=${clef}`,
     `${tok} |]`,
   ].join("\n");
+}
+
+/** Map a pitch class (+major/minor) to a canonical ABC key string. Picks the
+ *  spelling most musicians would expect when reading at sight — sharp keys
+ *  for sharp pcs, flat keys for flat ones. Edge cases (Db vs C#, F# vs Gb)
+ *  use the more common notation. */
+function pcToKeyString(pc: number, minor: boolean): string {
+  if (!minor) {
+    return ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"][pc];
+  }
+  return ["Cm", "C#m", "Dm", "Ebm", "Em", "Fm", "F#m", "Gm", "G#m", "Am", "Bbm", "Bm"][pc];
 }
 
 function referenceMidiForVoice(voice: VoiceType | null): number {
@@ -958,6 +997,11 @@ async function drawShare() {
   const row = document.getElementById("share-row")!;
   const choraleInfo = dataset.chorales[String(currentPhrase.chorale)];
   const choraleTitle = choraleInfo?.title ?? `BWV ${currentPhrase.chorale}`;
+  const phrasePermalink = `${window.location.origin}${window.location.pathname}#${permalinkFor(currentPhrase)}`;
+  // The URL printed beneath the QR is intentionally the root page, not the
+  // permalink — the permalink is already encoded in the QR. The plain-text
+  // line just tells a paper-reader where to go to find BachDay at all.
+  const rootUrl = `${window.location.origin}${window.location.pathname}`;
   try {
     await renderShareCanvas(
       canvas, PORTRAIT_URL, trace,
@@ -968,11 +1012,16 @@ async function drawShare() {
           + (attemptNum > 1 ? ` · attempt ${attemptNum}` : ""),
         date: todayKey(),
       },
+      phrasePermalink,
+      rootUrl,
     );
     canvas.hidden = false;
     row.hidden = false;
-    const dl = document.getElementById("dl-btn") as HTMLButtonElement;
-    dl.onclick = () => {
+    const copyBtn = document.getElementById("copy-share-btn") as HTMLButtonElement;
+    const dlBtn = document.getElementById("dl-share-btn") as HTMLButtonElement;
+    const status = document.getElementById("copy-share-status")!;
+    copyBtn.onclick = () => copyShareImage(canvas, status);
+    dlBtn.onclick = () => {
       const a = document.createElement("a");
       a.href = canvas.toDataURL("image/png");
       a.download = `bachday-${todayKey()}.png`;
@@ -980,6 +1029,24 @@ async function drawShare() {
     };
   } catch (e) {
     console.warn("share canvas failed", e);
+  }
+}
+
+/** Copy the rendered share image to the clipboard. The image itself carries
+ *  the QR-coded permalink, so no additional clipboard formats are needed. */
+async function copyShareImage(canvas: HTMLCanvasElement, status: HTMLElement) {
+  const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/png"));
+  if (!blob) { status.textContent = "(failed to render)"; return; }
+  const setStatus = (s: string) => {
+    status.textContent = s;
+    setTimeout(() => { status.textContent = ""; }, 2500);
+  };
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    setStatus("✓ image copied");
+  } catch (e) {
+    console.warn("clipboard write failed", e);
+    setStatus("(clipboard unavailable — use Download)");
   }
 }
 

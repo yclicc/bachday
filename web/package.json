@@ -9,8 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tensorflow/tfjs": "^4.22.0",
+    "@types/qrcode": "^1.5.6",
     "abcjs": "^6.4.4",
-    "@tensorflow/tfjs": "^4.22.0"
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

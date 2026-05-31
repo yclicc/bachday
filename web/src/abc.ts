@@ -6,7 +6,10 @@
  * MIDI sequence, and injecting moveable-do solfege as `w:` lyric lines.
  */
 
-import { solfege, tonicPc, isChromatic, type SolfegeMode } from "./solfege";
+import {
+  tonicPc, isChromatic, solfegeForSpelling, accidentalDirection,
+  type SolfegeMode,
+} from "./solfege";
 
 // Diatonic step → semitones above C
 const STEP_SEMITONES = [0, 2, 4, 5, 7, 9, 11];
@@ -281,12 +284,23 @@ export function midiToAbcToken(midi: number, keyStr: string): string {
   // nearest natural spelling with an explicit accidental.
   let letter = "C";
   let basePc = 0;
-  let explicit: "" | "^" | "_" = "";
+  let explicit: "" | "^" | "_" | "=" = "";
   let found = false;
   for (const [L, b] of letters) {
     const adj = keyAcc.get(L) ?? 0;
     if ((((b + adj) % 12) + 12) % 12 === pc) {
       letter = L; basePc = b + adj; found = true; break;
+    }
+  }
+  // Natural that cancels a key-signature accidental — e.g. G natural in
+  // B major. Without this branch, the first loop never matches G (because
+  // the key adjusts G by +1) and the sharp/flat fallback can't reach pc
+  // either, so the token comes out misspelt with a stray double accidental.
+  if (!found) {
+    for (const [L, b] of letters) {
+      if (((b % 12) + 12) % 12 === pc && (keyAcc.get(L) ?? 0) !== 0) {
+        letter = L; basePc = b; explicit = "="; found = true; break;
+      }
     }
   }
   if (!found) {
@@ -344,10 +358,13 @@ export function addSolfegeLyrics(abc: string, mode: SolfegeMode): string {
     let m: RegExpExecArray | null;
     NOTE_RE.lastIndex = 0;
     while ((m = NOTE_RE.exec(clean))) {
-      const midi = abcNoteLetterToMidi(m[1] ?? "", m[2], m[3] ?? "", keyAcc);
+      const inlineAcc = m[1] ?? "";
+      const letter = (m[2] ?? "C").toUpperCase();
+      const midi = abcNoteLetterToMidi(inlineAcc, m[2], m[3] ?? "", keyAcc);
       const chrom = isChromatic(midi, pc, minor);
-      if (mode === "chromatic" && !chrom) syllables.push("*");
-      else syllables.push(solfege(midi, pc, minor));
+      if (mode === "chromatic" && !chrom) { syllables.push("*"); continue; }
+      const dir = accidentalDirection(inlineAcc, keyAcc.get(letter) ?? 0);
+      syllables.push(solfegeForSpelling(midi, pc, minor, dir));
     }
     if (syllables.length) out.push("w: " + syllables.join(" "));
   }
