@@ -47,7 +47,7 @@ let warmupDetector: LivePitchDetector | null = null;
 
 async function main() {
   try {
-    const raw = await (await fetch("/phrases.json")).json();
+    const raw = await (await fetch(new URL("phrases.json", document.baseURI))).json();
     dataset = Array.isArray(raw)
       ? { chorales: {}, lyrics: {}, phrases: raw as PhraseRow[] }
       : (raw as Dataset);
@@ -243,6 +243,30 @@ function openInfo({ initial }: { initial: boolean }) {
       Proceedings of the IEEE International Conference on Acoustics, Speech,
       and Signal Processing (ICASSP), 2018.
     </p>
+    <details class="license">
+      <summary>CREPE license (MIT)</summary>
+      <pre class="license-text">The MIT License (MIT)
+
+Copyright (c) 2018 Jong Wook Kim
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.</pre>
+    </details>
     <p class="info-block">
       The phrase dataset was extracted from the Bach chorales using
       <a href="https://www.music21.org/" target="_blank" rel="noopener">music21</a>.

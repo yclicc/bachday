@@ -504,3 +504,16 @@ button.tiny { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
 }
 .modal-actions { justify-content: space-between; }
 .modal-actions button.secondary { margin-right: auto; }
+.license { margin: 0.35rem 0 0.75rem; font-size: 0.85rem; }
+.license summary { cursor: pointer; color: var(--muted); }
+.license-text {
+  margin: 0.5rem 0 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--accent-soft);
+  border-left: 3px solid var(--line);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
