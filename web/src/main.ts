@@ -235,7 +235,9 @@ function openInfo({ initial }: { initial: boolean }) {
     <p class="info-block">
       Pitch detection runs the
       <a href="https://github.com/marl/crepe" target="_blank" rel="noopener">CREPE</a>
-      model in your browser. Thank you to its authors:
+      model in your browser when device performance allows, with a YIN
+      autocorrelation fallback on lower-power devices. Thank you to the
+      authors of both:
     </p>
     <p class="citation">
       Jong Wook Kim, Justin Salamon, Peter Li, Juan Pablo Bello.
@@ -267,6 +269,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.</pre>
     </details>
+    <p class="citation">
+      Alain de Cheveigné and Hideki Kawahara.
+      <em>YIN, a fundamental frequency estimator for speech and music.</em>
+      Journal of the Acoustical Society of America, 111(4):1917–1930, 2002.
+    </p>
     <p class="info-block">
       The phrase dataset was extracted from the Bach chorales using
       <a href="https://www.music21.org/" target="_blank" rel="noopener">music21</a>.
@@ -282,7 +289,7 @@ SOFTWARE.</pre>
     <p class="info-block">
       The Bach chorale source files in the music21 corpus derive from the
       MusicXML transcriptions made by the late Margaret Greentree.
-      We are grateful for her work.
+      Without such diligent work, this project wouldn't have been possible.
     </p>
   `;
 
