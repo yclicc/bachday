@@ -61,6 +61,15 @@ function getModel(): Promise<tf.LayersModel> {
 /** Eagerly start loading the CREPE model so the first record click doesn't
  *  pay the download/init latency. Skipped if a previous session already
  *  decided this device is too slow for CREPE. */
+/** Force the persisted pitch-detection backend for this device. Exposed on
+ *  `window` as `crepe()` / `yin()` so it can be flipped from the JS console. */
+export function setPreferredBackend(b: Backend): void {
+  setStoredBackend(b);
+  if (b === "yin") modelPromise = null;
+  else preloadCrepe();
+  console.info(`BachDay pitch backend set to ${b}.`);
+}
+
 export function preloadCrepe(): void {
   if (getStoredBackend() === "yin") return;
   getModel().catch((e) => {
@@ -158,10 +167,31 @@ function yinPitch(buf: Float32Array, sr: number): { midi: number | null; confide
   return { midi, confidence: 1 - cmnd[tauEst] };
 }
 
+/** Inline AudioWorklet processor source. Posts each 128-frame audio block to
+ *  the main thread via the node's MessagePort. Lives as a Blob URL so we don't
+ *  need a separate build artifact for it. */
+const WORKLET_SRC = `
+class BachdayCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const input = inputs[0];
+    if (input && input[0]) this.port.postMessage(input[0].slice());
+    return true;
+  }
+}
+registerProcessor("bachday-capture", BachdayCaptureProcessor);
+`;
+let workletUrl: string | null = null;
+function getWorkletUrl(): string {
+  if (!workletUrl) {
+    workletUrl = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "application/javascript" }));
+  }
+  return workletUrl;
+}
+
 export class LivePitchDetector {
   private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
-  private node: ScriptProcessorNode | null = null;
+  private node: AudioWorkletNode | null = null;
   private points: PitchPoint[] = [];
   private ring = new Float32Array(FRAME * 4);
   private writePos = 0;
@@ -172,6 +202,10 @@ export class LivePitchDetector {
   private backend: Backend = "crepe";
   private model: tf.LayersModel | null = null;
   private latencies: number[] = [];
+  /** Set by {@link stop}. Inflight inference resolutions and pending audio
+   *  callbacks check this and bail, so a late frame can never push pitch
+   *  through to a UI that has already moved on. */
+  private stopped = false;
 
   async start(onPitch: (p: PitchPoint) => void): Promise<void> {
     const stored = getStoredBackend();
@@ -187,8 +221,15 @@ export class LivePitchDetector {
         setStoredBackend("yin");
       }
     }
+    // Caller may have aborted us during the model-load await.
+    if (this.stopped) return;
 
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (this.stopped) {
+      this.stream.getTracks().forEach((t) => t.stop());
+      this.stream = null;
+      return;
+    }
     this.ctx = new AudioContext();
     this.srcRate = this.ctx.sampleRate;
     this.points = [];
@@ -198,16 +239,24 @@ export class LivePitchDetector {
     this.inflight = false;
     this.latencies = [];
 
+    await this.ctx.audioWorklet.addModule(getWorkletUrl());
+    if (this.stopped) return;
     const source = this.ctx.createMediaStreamSource(this.stream);
-    this.node = this.ctx.createScriptProcessor(2048, 1, 1);
-    this.node.onaudioprocess = (e) => {
-      const input = e.inputBuffer.getChannelData(0);
-      this.appendResampled(input);
+    this.node = new AudioWorkletNode(this.ctx, "bachday-capture", {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+    });
+    this.node.port.onmessage = (e) => {
+      if (this.stopped) return;
+      this.appendResampled(e.data as Float32Array);
       this.tryInfer(onPitch);
     };
     source.connect(this.node);
+    // Keep the graph alive by connecting through a muted sink — without an
+    // output destination some browsers stop scheduling the worklet.
     const sink = this.ctx.createGain();
-    sink.gain.value = 0; // monitor would feedback, mute the sink
+    sink.gain.value = 0;
     this.node.connect(sink);
     sink.connect(this.ctx.destination);
   }
@@ -223,7 +272,15 @@ export class LivePitchDetector {
       const sample = src[i0] * (1 - frac) + (src[i0 + 1] ?? src[i0]) * frac;
       this.ring[this.writePos] = sample;
       this.writePos = (this.writePos + 1) % this.ring.length;
-      if (this.fillLen < this.ring.length) this.fillLen++;
+      if (this.fillLen < this.ring.length) {
+        this.fillLen++;
+      } else {
+        // Buffer overrun — the oldest unread sample was just clobbered by the
+        // writer. Advance the conceptual read clock so subsequent frame
+        // timestamps reflect the dropped audio rather than silently lying
+        // about when each pitch was sung.
+        this.samplesAt16k++;
+      }
     }
   }
 
@@ -269,6 +326,7 @@ export class LivePitchDetector {
     const t0 = performance.now();
     this.inferFrame(frame).then(({ midi, confidence }) => {
       this.inflight = false;
+      if (this.stopped) return;
       this.maybeSwitchToYin(performance.now() - t0);
       const point: PitchPoint = { time: frameTime, midi, confidence };
       this.points.push(point);
@@ -277,14 +335,18 @@ export class LivePitchDetector {
       if (this.fillLen >= FRAME) this.tryInfer(onPitch);
     }).catch((e) => {
       this.inflight = false;
-      console.warn("Pitch inference failed:", e);
+      if (!this.stopped) console.warn("Pitch inference failed:", e);
     });
   }
 
   async stop(): Promise<PitchPoint[]> {
-    this.node?.disconnect();
+    this.stopped = true;
+    if (this.node) {
+      this.node.port.onmessage = null;
+      this.node.disconnect();
+    }
     this.stream?.getTracks().forEach((t) => t.stop());
-    await this.ctx?.close();
+    if (this.ctx && this.ctx.state !== "closed") await this.ctx.close();
     this.ctx = null;
     this.stream = null;
     this.node = null;

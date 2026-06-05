@@ -13,7 +13,7 @@ import {
   type VisualObj,
 } from "./abc";
 import { tonicPc, solfegeForSpelling, accidentalDirection } from "./solfege";
-import { LivePitchDetector, preloadCrepe } from "./pitch";
+import { LivePitchDetector, preloadCrepe, setPreferredBackend } from "./pitch";
 import { LiveTraceRenderer } from "./live-trace";
 import { playDoSolDo, pickTonicMidi } from "./cue";
 import { renderShareCanvas, type AccuracyReport } from "./accuracy";
@@ -41,9 +41,27 @@ let attemptNum = 0;
  *  routing to the score view. Settings changes re-render the current screen
  *  in place rather than replaying the warm-up. */
 let currentScreen: "warmup" | "phrase" = "phrase";
-/** Detector for the warm-up page's built-in practice mode; tracked here so we
- *  can cleanly stop it when navigating away. */
-let warmupDetector: LivePitchDetector | null = null;
+/** The mic-listening detector currently owned by the active screen. There is
+ *  at most one at a time — warm-up practice, on-page practice and recording
+ *  all share this slot, and switching modes (or navigating away, or
+ *  re-rendering on a settings change) tears the previous one down before
+ *  starting the next. Inflight pitch frames from a stopped detector are
+ *  suppressed inside {@link LivePitchDetector.stop} so they can't leak into
+ *  the new screen. */
+let activeDetector: LivePitchDetector | null = null;
+type TakeMode = "idle" | "warmup" | "practice" | "recording";
+let activeMode: TakeMode = "idle";
+
+/** Stop whichever detector currently owns the mic (if any) and clear the
+ *  module-level slot. Fire-and-forget — callers don't await because
+ *  {@link LivePitchDetector.stop} suppresses any further callbacks
+ *  synchronously via its `stopped` flag. */
+function stopActiveDetector(): Promise<void> {
+  const d = activeDetector;
+  activeDetector = null;
+  activeMode = "idle";
+  return d ? d.stop().then(() => undefined) : Promise.resolve();
+}
 
 async function main() {
   try {
@@ -68,6 +86,10 @@ async function main() {
     loadDaily();
   }
   preloadCrepe();
+  // Console escape hatches: `crepe()` or `yin()` from devtools persist the
+  // chosen backend for this device (used by LivePitchDetector on next start).
+  (window as unknown as { crepe: () => void; yin: () => void }).crepe = () => setPreferredBackend("crepe");
+  (window as unknown as { crepe: () => void; yin: () => void }).yin = () => setPreferredBackend("yin");
 }
 
 /** Try to navigate to the phrase encoded in the URL hash. Returns true if a
@@ -90,7 +112,7 @@ function tryLoadFromHash(): boolean {
  *  phrase load — they don't yank the user back to the warm-up of the current
  *  one. */
 function enterPhrase() {
-  stopWarmupDetector();
+  void stopActiveDetector();
   if (prefs.showReferencePitch || prefs.showWarmupScale) {
     currentScreen = "warmup";
     renderWarmupPage();
@@ -103,13 +125,6 @@ function enterPhrase() {
 function renderCurrentScreen() {
   if (currentScreen === "warmup") renderWarmupPage();
   else renderPhraseView();
-}
-
-function stopWarmupDetector() {
-  if (warmupDetector) {
-    void warmupDetector.stop();
-    warmupDetector = null;
-  }
 }
 
 function loadDaily() {
@@ -559,10 +574,12 @@ function renderWarmupPage() {
   const { pc: sourceTonicPc, minor } = tonicPc(sourceKey);
   const transposedTonicPc = ((sourceTonicPc + transpose) % 12 + 12) % 12;
   const phraseMid = (soundingLo + soundingHi) / 2;
-  // Warm-up scale ascends an octave from its tonic, so anchor at (or just
-  // below) the phrase floor — the apex then lands inside the phrase rather
-  // than a sixth above it, which is what the user actually has to sing.
-  const warmupTonicMidi = pickTonicMidi(transposedTonicPc, soundingLo - 2);
+  // Anchor the scale's *midpoint* on the phrase midpoint — i.e. target a
+  // tonic six semitones below it, so the resulting one-octave scale sits
+  // roughly symmetrically around what the singer is about to sing. Earlier
+  // we anchored on the phrase floor and basses got handed a scale a full
+  // octave below their working range.
+  const warmupTonicMidi = pickTonicMidi(transposedTonicPc, phraseMid - 6);
   const refMidi = referenceMidiForVoice(prefs.voice);
 
   const choraleInfo = dataset.chorales[String(currentPhrase.chorale)];
@@ -651,14 +668,19 @@ function renderWarmupPage() {
   warmupTrace.setPracticeMode(true);
   if (prefs.showReferencePitch) warmupTrace.setReferencePitch(refMidi);
 
-  stopWarmupDetector();
-  warmupDetector = new LivePitchDetector();
-  warmupDetector.start((p) => warmupTrace.addPoint(p)).catch((e) => {
-    console.warn("warm-up practice mic failed:", e);
+  void stopActiveDetector().then(() => {
+    const d = new LivePitchDetector();
+    activeDetector = d;
+    activeMode = "warmup";
+    d.start((p) => { if (activeDetector === d) warmupTrace.addPoint(p); })
+      .catch((e) => {
+        if (activeDetector === d) { activeDetector = null; activeMode = "idle"; }
+        console.warn("warm-up practice mic failed:", e);
+      });
   });
 
   (document.getElementById("warmup-continue-btn") as HTMLButtonElement).onclick = () => {
-    stopWarmupDetector();
+    void stopActiveDetector();
     currentScreen = "phrase";
     renderPhraseView();
   };
@@ -667,6 +689,10 @@ function renderWarmupPage() {
 function renderPhraseView() {
   if (!prefs.voice) return openOnboarding();
   if (!currentPhrase) currentPhrase = phraseForDate(dataset.phrases);
+  // Settings changes re-render this screen mid-flow. Tear down any in-progress
+  // take so the leftover detector can't keep pushing pitch frames into the
+  // fresh canvas + trace we're about to mount.
+  void stopActiveDetector();
 
   currentTranspose = customTranspose ?? chooseTransposition(
     currentPhrase.ambitus_lo, currentPhrase.ambitus_hi, prefs.voice, currentPhrase.part,
@@ -766,8 +792,7 @@ function renderPhraseView() {
   currentVisual = (rendered[0] as VisualObj) ?? null;
 
   wireCue();
-  wireRecorder();
-  wirePractice();
+  wireTake();
   wireCopyLink();
   (document.getElementById("shuffle-btn") as HTMLButtonElement).onclick = loadShuffle;
   const dailyBtn = document.getElementById("daily-btn") as HTMLButtonElement | null;
@@ -898,37 +923,6 @@ function wireCopyLink() {
   };
 }
 
-function wirePractice() {
-  const btn = document.getElementById("practice-btn") as HTMLButtonElement | null;
-  if (!btn) return;
-  const detector = new LivePitchDetector();
-  let active = false;
-  btn.onclick = async () => {
-    if (!active) {
-      // Practice always reveals target pitches — independent of the
-      // sight-reading "easy mode" preference.
-      try {
-        await detector.start((p) => trace?.addPoint(p));
-      } catch (e) {
-        btn.textContent = `! ${(e as Error).message}`;
-        return;
-      }
-      active = true;
-      trace?.resetPoints();
-      trace?.setPracticeMode(true);
-      btn.textContent = "■ Stop practice";
-      btn.classList.remove("secondary");
-    } else {
-      await detector.stop();
-      active = false;
-      trace?.setPracticeMode(false);
-      trace?.resetPoints();
-      btn.textContent = "◐ Practice";
-      btn.classList.add("secondary");
-    }
-  };
-}
-
 function wireCue() {
   const btn = document.getElementById("cue-btn") as HTMLButtonElement;
   btn.onclick = () => {
@@ -938,14 +932,19 @@ function wireCue() {
   };
 }
 
-function wireRecorder() {
-  const btn = document.getElementById("rec-btn") as HTMLButtonElement;
+/** Wires up both the Practice and Record buttons against a single shared
+ *  {@link activeDetector} slot. The two buttons drive a small state machine
+ *  (`idle` ↔ `practice`, `idle` ↔ `recording`) — starting one mode always
+ *  stops whatever was running before, and the synchronous `activeMode`
+ *  assignment claims the slot before any `await` so double-clicks resolve to
+ *  a single transition. */
+function wireTake() {
+  const recBtn = document.getElementById("rec-btn") as HTMLButtonElement;
+  const practiceBtn = document.getElementById("practice-btn") as HTMLButtonElement | null;
   const status = document.getElementById("rec-status")!;
   const canvas = document.getElementById("trace-canvas") as HTMLCanvasElement;
   const scoreRow = document.getElementById("score-row")!;
   const scoreText = document.getElementById("score-text")!;
-  const detector = new LivePitchDetector();
-  let isRecording = false;
 
   const targetNotes = currentPhrase
     ? abcSourceNoteSequence(currentPhrase.abc)
@@ -963,62 +962,120 @@ function wireRecorder() {
   );
   if (prefs.showReferencePitch) trace.setReferencePitch(referenceMidiForVoice(prefs.voice));
 
-  btn.onclick = async () => {
-    if (!isRecording) {
-      // Retry support: if a previous attempt has already frozen the trace,
-      // unfreeze + clear it before the next take. The share canvas and
-      // score row stay visible from the previous attempt until the new
-      // recording finishes so the user can still grab the old image.
+  const setPracticeButton = (running: boolean) => {
+    if (!practiceBtn) return;
+    practiceBtn.textContent = running ? "■ Stop practice" : "◐ Practice";
+    practiceBtn.classList.toggle("secondary", !running);
+  };
+
+  /** Start a fresh detector and pipe its frames into `trace` — but only while
+   *  the slot still belongs to us, so a fast mode switch can't see crossed
+   *  frames. Returns `"aborted"` if a subsequent click stopped us during the
+   *  model-load / getUserMedia await; callers should leave the UI alone in
+   *  that case (the click that aborted us has already settled it). */
+  const startDetector = async (mode: "practice" | "recording"): Promise<Error | "aborted" | null> => {
+    const d = new LivePitchDetector();
+    activeDetector = d;
+    activeMode = mode;
+    try {
+      await d.start((p) => { if (activeDetector === d) trace?.addPoint(p); });
+    } catch (e) {
+      if (activeDetector === d) { activeDetector = null; activeMode = "idle"; }
+      return e as Error;
+    }
+    if (activeDetector !== d) return "aborted";
+    return null;
+  };
+
+  if (practiceBtn) practiceBtn.onclick = async () => {
+    if (activeMode === "practice") {
+      await stopActiveDetector();
+      trace?.setPracticeMode(false);
       trace?.resetPoints();
-      if (prefs.showReferencePitch) trace?.setReferencePitch(referenceMidiForVoice(prefs.voice));
-      status.textContent = "loading pitch model…";
-      try {
-        await detector.start((p) => trace?.addPoint(p));
-      } catch (e) {
-        status.textContent = `start failed: ${(e as Error).message}`;
-        return;
+      setPracticeButton(false);
+      return;
+    }
+    if (activeMode === "recording") return; // ignore while recording
+    // claim the slot synchronously before any await, so a second click
+    // sees the new mode and falls into the stop branch instead of starting
+    // a second mic stream.
+    activeMode = "practice";
+    setPracticeButton(true);
+    trace?.resetPoints();
+    trace?.setPracticeMode(true);
+    const err = await startDetector("practice");
+    if (err === "aborted") return;
+    if (err) {
+      trace?.setPracticeMode(false);
+      setPracticeButton(false);
+      if (practiceBtn) practiceBtn.textContent = `! ${err.message}`;
+    }
+  };
+
+  recBtn.onclick = async () => {
+    if (activeMode === "recording") {
+      recBtn.disabled = true;
+      await stopActiveDetector();
+      recBtn.textContent = "● Record";
+      recBtn.disabled = false;
+      trace?.freeze();
+
+      const { score, hits, meanCentsError, perNote } = trace!.computeScore();
+      status.textContent = "";
+      scoreRow.hidden = false;
+      // Same hit rule as the share image (per-target tolerance + ≥50% of slot
+      // frames inside it), so the dialog number and the shared % never drift.
+      scoreText.innerHTML =
+        `${Math.round(score * 100)}% (${hits}/${perNote.length})` +
+        (meanCentsError > 0 ? ` <span class="err">· mean ${meanCentsError.toFixed(0)}¢</span>` : "");
+
+      attemptNum++;
+      lastReport = { score, meanCentsError, frames: [] };
+      // Only persist the first take for the day, so the daily history reflects
+      // a true sight-reading. Subsequent attempts still get a score and share
+      // image but don't overwrite the recorded one.
+      if (currentMode === "daily" && attemptNum === 1) {
+        appendHistory({
+          date: todayKey(),
+          chorale: currentPhrase!.chorale,
+          part: currentPhrase!.part,
+          phrase: currentPhrase!.phrase,
+          score,
+          meanCentsError,
+        });
+        renderHistory();
       }
-      isRecording = true;
-      btn.textContent = "■ Stop";
-      status.textContent = attemptNum > 0
-        ? `recording attempt ${attemptNum + 1} — sing the phrase…`
-        : "recording — sing the phrase…";
-      scoreRow.hidden = true;
+      await drawShare();
       return;
     }
 
-    btn.disabled = true;
-    await detector.stop();
-    isRecording = false;
-    btn.textContent = "● Record";
-    btn.disabled = false;
-    trace?.freeze();
-
-    const { score, meanCentsError, perNote } = trace!.computeScore();
-    const hits = perNote.filter((n) => n.cents != null && Math.abs(n.cents) <= 60).length;
-    status.textContent = "";
-    scoreRow.hidden = false;
-    scoreText.innerHTML =
-      `${hits}/${perNote.length} within ±60¢` +
-      (meanCentsError > 0 ? ` <span class="err">· mean ${meanCentsError.toFixed(0)}¢</span>` : "");
-
-    attemptNum++;
-    lastReport = { score, meanCentsError, frames: [] };
-    // Only persist the first take for the day, so the daily history reflects
-    // a true sight-reading. Subsequent attempts still get a score and share
-    // image but don't overwrite the recorded one.
-    if (currentMode === "daily" && attemptNum === 1) {
-      appendHistory({
-        date: todayKey(),
-        chorale: currentPhrase!.chorale,
-        part: currentPhrase!.part,
-        phrase: currentPhrase!.phrase,
-        score,
-        meanCentsError,
-      });
-      renderHistory();
+    // Starting a take. If practice was running, tear it down first.
+    if (activeMode === "practice") {
+      await stopActiveDetector();
+      trace?.setPracticeMode(false);
+      setPracticeButton(false);
     }
-    await drawShare();
+
+    // Retry support: clear any frozen previous attempt. The share canvas and
+    // score row stay visible from the previous attempt until the new
+    // recording finishes so the user can still grab the old image.
+    trace?.resetPoints();
+    if (prefs.showReferencePitch) trace?.setReferencePitch(referenceMidiForVoice(prefs.voice));
+    status.textContent = "loading pitch model…";
+    // Claim the slot synchronously so a double-click can't start twice.
+    activeMode = "recording";
+    recBtn.textContent = "■ Stop";
+    const err = await startDetector("recording");
+    if (err === "aborted") return;
+    if (err) {
+      recBtn.textContent = "● Record";
+      status.textContent = `start failed: ${err.message}`;
+      return;
+    }
+    status.textContent = attemptNum > 0
+      ? `recording attempt ${attemptNum + 1} — sing the phrase…`
+      : "recording — sing the phrase…";
+    scoreRow.hidden = true;
   };
 }
 

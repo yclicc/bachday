@@ -40,6 +40,9 @@ const JI_DEVIATION_CENTS: number[] = [
 
 export interface TraceScore {
   score: number;
+  /** Number of target slots that passed the share-image hit rule (≥50% of the
+   *  slot's frames within per-target tolerance). `score === hits / perNote.length`. */
+  hits: number;
   meanCentsError: number;
   perNote: Array<{ target: number; sung: number | null; cents: number | null }>;
 }
@@ -148,7 +151,22 @@ export class LiveTraceRenderer {
 
   addPoint(p: PitchPoint) {
     if (this.frozen) return;
-    this.points.push(p);
+    // Maintain points sorted by time. A single detector emits frames in order,
+    // so the common case is an O(1) tail push; out-of-order arrivals (e.g. a
+    // late inflight inference after a backend swap) fall back to binary-search
+    // insertion. freeze() and computeScore() rely on this invariant.
+    const last = this.points[this.points.length - 1];
+    if (!last || p.time >= last.time) {
+      this.points.push(p);
+    } else {
+      let lo = 0, hi = this.points.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (this.points[mid].time <= p.time) lo = mid + 1;
+        else hi = mid;
+      }
+      this.points.splice(lo, 0, p);
+    }
     // grow the view so the trace doesn't run off the right edge
     if (p.time > this.viewEnd) this.viewEnd = p.time * 1.05;
     if (!this.rafHandle) {
@@ -362,7 +380,7 @@ export class LiveTraceRenderer {
   private scoreForWindow(start: number, end: number): TraceScore {
     const N = this.targetNotes.length;
     const span = end - start;
-    if (N === 0 || span <= 0) return { score: 0, meanCentsError: 0, perNote: [] };
+    if (N === 0 || span <= 0) return { score: 0, hits: 0, meanCentsError: 0, perNote: [] };
     const perNote: TraceScore["perNote"] = [];
     let hits = 0, voicedSlots = 0, errSum = 0;
     const HIT_FRACTION_THRESHOLD = 0.5;
@@ -403,7 +421,7 @@ export class LiveTraceRenderer {
       }
       perNote.push({ target, sung, cents });
     }
-    return { score: hits / N, meanCentsError: voicedSlots ? errSum / voicedSlots : 0, perNote };
+    return { score: hits / N, hits, meanCentsError: voicedSlots ? errSum / voicedSlots : 0, perNote };
   }
 
   /** Per-target-note score using the voiced span as the time base. Searches
@@ -413,7 +431,7 @@ export class LiveTraceRenderer {
    * viewEnd so the rendered target bars line up with the chosen alignment. */
   computeScore(): TraceScore {
     const N = this.targetNotes.length;
-    if (N === 0) return { score: 0, meanCentsError: 0, perNote: [] };
+    if (N === 0) return { score: 0, hits: 0, meanCentsError: 0, perNote: [] };
 
     // Use the voiced span as the search anchor — falls back to the current
     // view if too few voiced frames to be meaningful.
