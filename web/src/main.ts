@@ -1015,8 +1015,31 @@ function wireTake() {
   recBtn.onclick = async () => {
     if (activeMode === "recording") {
       recBtn.disabled = true;
-      await stopActiveDetector();
+      // Hold onto the detector across stop() so we can re-run the offline
+      // pass over its buffered 16 kHz audio. stopActiveDetector() would
+      // discard it before we get the chance.
+      const d = activeDetector;
+      activeDetector = null;
+      activeMode = "idle";
+      if (d) await d.stop();
       recBtn.textContent = "● Record";
+
+      // Offline rescoring: drop the dropped-frame live trace, replace with a
+      // full-coverage 2×-temporal-resolution pass over the buffered audio,
+      // then freeze + score as before. A failure here falls back silently to
+      // the live trace so the user still gets a result.
+      if (d && d.hasRecordedAudio()) {
+        status.textContent = "scoring…";
+        try {
+          const refined = await d.analyzeOffline((frac) => {
+            status.textContent = `scoring… ${Math.round(frac * 100)}%`;
+          });
+          trace?.replacePoints(refined);
+        } catch (e) {
+          console.warn("offline analysis failed; using live trace:", e);
+        }
+      }
+
       recBtn.disabled = false;
       trace?.freeze();
 

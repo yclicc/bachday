@@ -202,6 +202,11 @@ export class LivePitchDetector {
   private backend: Backend = "crepe";
   private model: tf.LayersModel | null = null;
   private latencies: number[] = [];
+  /** Every resampled 16 kHz chunk written during capture, kept verbatim so
+   *  {@link analyzeOffline} can re-run the chosen backend over the whole take
+   *  without the dropped frames the live path tolerates. Cleared by
+   *  {@link analyzeOffline} once consumed. */
+  private recordedChunks: Float32Array[] = [];
   /** Set by {@link stop}. Inflight inference resolutions and pending audio
    *  callbacks check this and bail, so a late frame can never push pitch
    *  through to a UI that has already moved on. */
@@ -238,6 +243,7 @@ export class LivePitchDetector {
     this.samplesAt16k = 0;
     this.inflight = false;
     this.latencies = [];
+    this.recordedChunks = [];
 
     await this.ctx.audioWorklet.addModule(getWorkletUrl());
     if (this.stopped) return;
@@ -261,15 +267,20 @@ export class LivePitchDetector {
     sink.connect(this.ctx.destination);
   }
 
-  /** Linear-interpolation resample of `src` to 16 kHz, written into the ring. */
+  /** Linear-interpolation resample of `src` to 16 kHz, written into the ring
+   *  for the realtime inference path AND appended verbatim to
+   *  {@link recordedChunks} for the offline rescoring pass. */
   private appendResampled(src: Float32Array): void {
     const ratio = SR / this.srcRate;
     const outLen = Math.floor(src.length * ratio);
+    if (outLen === 0) return;
+    const recordChunk = new Float32Array(outLen);
     for (let i = 0; i < outLen; i++) {
       const srcIdx = i / ratio;
       const i0 = Math.floor(srcIdx);
       const frac = srcIdx - i0;
       const sample = src[i0] * (1 - frac) + (src[i0 + 1] ?? src[i0]) * frac;
+      recordChunk[i] = sample;
       this.ring[this.writePos] = sample;
       this.writePos = (this.writePos + 1) % this.ring.length;
       if (this.fillLen < this.ring.length) {
@@ -282,6 +293,7 @@ export class LivePitchDetector {
         this.samplesAt16k++;
       }
     }
+    this.recordedChunks.push(recordChunk);
   }
 
   private async inferFrame(frame: Float32Array): Promise<{ midi: number | null; confidence: number }> {
@@ -352,4 +364,111 @@ export class LivePitchDetector {
     this.node = null;
     return this.points;
   }
+
+  /** True iff there is buffered audio left to analyse. The recording stop
+   *  branch checks this before showing a "scoring…" status. */
+  hasRecordedAudio(): boolean {
+    return this.recordedChunks.length > 0;
+  }
+
+  /** Re-run pitch detection over the full buffered 16 kHz recording. The live
+   *  path keeps one inference in flight to stay within the per-frame budget,
+   *  which means it silently drops frames whenever the model can't keep up;
+   *  the offline pass has no budget so it processes every frame, slides the
+   *  window at FRAME/2 (2× temporal resolution) and — for CREPE — batches
+   *  inference for substantial throughput gains. Consumes
+   *  {@link recordedChunks} so a subsequent take starts clean. */
+  async analyzeOffline(onProgress?: (frac: number) => void): Promise<PitchPoint[]> {
+    if (this.recordedChunks.length === 0) return this.points;
+    let total = 0;
+    for (const c of this.recordedChunks) total += c.length;
+    const audio = new Float32Array(total);
+    let off = 0;
+    for (const c of this.recordedChunks) { audio.set(c, off); off += c.length; }
+    this.recordedChunks = [];
+    if (this.backend === "crepe" && this.model) {
+      return analyzeCrepeBatched(audio, this.model, onProgress);
+    }
+    return analyzeYinOffline(audio, onProgress);
+  }
+}
+
+/** Slide a 1024-sample window across `audio` with hop FRAME/2, batching CREPE
+ *  inference for throughput. Yields to the event loop between batches so the
+ *  UI can keep painting. */
+async function analyzeCrepeBatched(
+  audio: Float32Array,
+  model: tf.LayersModel,
+  onProgress?: (frac: number) => void,
+): Promise<PitchPoint[]> {
+  const HOP = FRAME / 2;
+  const points: PitchPoint[] = [];
+  if (audio.length < FRAME) return points;
+  const numFrames = Math.floor((audio.length - FRAME) / HOP) + 1;
+  const BATCH = 32;
+  for (let start = 0; start < numFrames; start += BATCH) {
+    const end = Math.min(numFrames, start + BATCH);
+    const B = end - start;
+    const flat = new Float32Array(B * FRAME);
+    for (let b = 0; b < B; b++) {
+      const offset = (start + b) * HOP;
+      let mean = 0;
+      for (let i = 0; i < FRAME; i++) mean += audio[offset + i];
+      mean /= FRAME;
+      let sumSq = 0;
+      const base = b * FRAME;
+      for (let i = 0; i < FRAME; i++) {
+        const v = audio[offset + i] - mean;
+        flat[base + i] = v;
+        sumSq += v * v;
+      }
+      const std = Math.sqrt(sumSq / FRAME) + 1e-8;
+      for (let i = 0; i < FRAME; i++) flat[base + i] /= std;
+    }
+    const result = tf.tidy(() => {
+      const input = tf.tensor2d(flat, [B, FRAME]);
+      return model.predict(input) as tf.Tensor;
+    });
+    const data = await result.data() as Float32Array;
+    result.dispose();
+    const bins = data.length / B;
+    for (let b = 0; b < B; b++) {
+      const row = data.subarray(b * bins, (b + 1) * bins);
+      const { midi, confidence } = decodePitch(row);
+      const frameIdx = start + b;
+      const time = (frameIdx * HOP + FRAME / 2) / SR;
+      points.push({
+        time,
+        midi: confidence > VOICING_THRESHOLD ? midi : null,
+        confidence,
+      });
+    }
+    onProgress?.(end / numFrames);
+    // Yield so the page can paint the progress string and the trace canvas.
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  return points;
+}
+
+async function analyzeYinOffline(
+  audio: Float32Array,
+  onProgress?: (frac: number) => void,
+): Promise<PitchPoint[]> {
+  const HOP = FRAME / 2;
+  const points: PitchPoint[] = [];
+  if (audio.length < FRAME) return points;
+  const numFrames = Math.floor((audio.length - FRAME) / HOP) + 1;
+  const frame = new Float32Array(FRAME);
+  for (let f = 0; f < numFrames; f++) {
+    const offset = f * HOP;
+    for (let i = 0; i < FRAME; i++) frame[i] = audio[offset + i];
+    const { midi, confidence } = yinPitch(frame, SR);
+    points.push({ time: (offset + FRAME / 2) / SR, midi, confidence });
+    if ((f & 31) === 0) {
+      onProgress?.(f / numFrames);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+  onProgress?.(1);
+  return points;
 }

@@ -177,6 +177,19 @@ export class LiveTraceRenderer {
     }
   }
 
+  /** Replace the trace's points wholesale — used after the recording's
+   *  offline rescoring pass to swap the live trace for the higher-quality
+   *  one. Caller is responsible for sorting; the offline analyser emits
+   *  frames in time order so the slice is already monotonic. */
+  replacePoints(points: PitchPoint[]) {
+    this.points = points.slice();
+    this.frozen = false;
+    this.viewStart = 0;
+    this.viewEnd = this.initialDuration;
+    for (const p of points) if (p.time > this.viewEnd) this.viewEnd = p.time * 1.05;
+    this.draw();
+  }
+
   /** Lock the canvas and rescale X to the user's voiced span so the target
    * bars line up with what they actually sang. */
   freeze() {
