@@ -237,8 +237,24 @@ function openInfo({ initial }: { initial: boolean }) {
   content.innerHTML = `
     <h2>About BachDay</h2>
     <p class="info-block">
-      A new Bach chorale phrase every day — transposed for your voice, lyrics
-      with movable-do solfege, and live pitch feedback when you sing along.
+      <strong>BachDay is daily sight-singing practice.</strong> Every day you
+      get one short phrase from a Bach chorale, transposed into your voice's
+      range, with movable-do solfege lyrics. Sing it at sight, and live pitch
+      feedback shows how close you got.
+    </p>
+    <p class="info-block">
+      If you turn on the optional <em>Reference pitch</em> warm-up in settings,
+      the app shows and plays a fixed pitch (G4 or G3) at the start of each
+      session, labelled by its scale degree in the day's key. The goal there is
+      long-term <strong>absolute-pitch</strong> development — hearing the same
+      anchor note daily and learning to recognise it.
+    </p>
+    <p class="info-block">
+      <strong>A note on pitch detection.</strong> The pitch tracker runs
+      entirely in your browser and isn't perfect — background noise, a quiet
+      mic, vowel changes or vibrato can all confuse it, and very low or very
+      high voices are harder to track. If a score looks unfair, it usually is:
+      try again in a quieter spot, closer to the mic.
     </p>
     <h3 class="info-h">A note on storage</h3>
     <p class="info-block">
@@ -439,7 +455,7 @@ function openSettings() {
   const refRow = document.createElement("div");
   refRow.className = "switch-row";
   const refLabel = document.createElement("div");
-  refLabel.innerHTML = `<div class="switch-label">Reference pitch</div><div class="switch-sub">Show G4 (women) or G3 (men) labelled by scale degree — for ear training</div>`;
+  refLabel.innerHTML = `<div class="switch-label">Reference pitch</div><div class="switch-sub">Hear G4 (women) or G3 (men) labelled by scale degree — for absolute-pitch training</div>`;
   refRow.append(refLabel, buildSwitch(!!prefs.showReferencePitch, (b) => {
     prefs.showReferencePitch = b; savePrefs(prefs); renderCurrentScreen();
   }));
@@ -622,7 +638,8 @@ function renderWarmupPage() {
   const app = document.getElementById("app")!;
   app.innerHTML = `
     <section class="fade-in warmup-page">
-      <div class="title-row"><h2>Warm-up</h2></div>
+      <div class="title-row"><h2>Reference pitch</h2></div>
+      <p class="page-purpose">For building absolute pitch.</p>
       <div class="meta">Up next · ${escapeHtml(choraleTitle)} · BWV ${currentPhrase.chorale} · ${partLabel(currentPhrase.part)} · phrase ${currentPhrase.phrase}</div>
       ${refHtml}
       ${scaleHtml}
@@ -738,6 +755,7 @@ function renderPhraseView() {
       <div class="title-row">
         <h2>${escapeHtml(choraleTitle)}${modeBadge}</h2>
       </div>
+      <p class="page-purpose">Practice sight-singing — one chorale phrase a day.</p>
       <div class="meta">
         BWV ${currentPhrase.chorale} · ${partLabel(currentPhrase.part)} · phrase ${currentPhrase.phrase}
         · ${currentTranspose >= 0 ? "+" : ""}${currentTranspose} semitones for ${VOICE_LABEL[prefs.voice]} · ${clef} clef
